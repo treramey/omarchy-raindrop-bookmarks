@@ -21,6 +21,9 @@ Item {
   property double lastFetchMs: 0
   readonly property int refreshIntervalMs: 5 * 60 * 1000
   property string errorMessage: ""
+  property bool pointerSelectionArmed: false
+  property real pointerPanelX: 0
+  property real pointerPanelY: 0
   readonly property string pluginId: "io.github.treramey.raindrop-bookmarks"
   property string configHome: Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")
   property string cacheHome: Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache")
@@ -196,6 +199,7 @@ Item {
         focus: true
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(event) {
+          root.pointerSelectionArmed = false
           if (event.key === Qt.Key_Escape) {
             if (root.filterText) { root.filterText = ""; root.filter() } else root.close()
           } else if (Util.editsFilter(event, root.filterText)) {
@@ -314,7 +318,17 @@ Item {
               id: mouse
               anchors.fill: parent
               hoverEnabled: true
-              onPositionChanged: root.selectedIndex = index
+              onPositionChanged: function(mouse) {
+                var panelPosition = mapToItem(panel, mouse.x, mouse.y)
+                if (root.pointerSelectionArmed
+                    && (panelPosition.x !== root.pointerPanelX
+                        || panelPosition.y !== root.pointerPanelY)) {
+                  root.selectedIndex = index
+                }
+                root.pointerPanelX = panelPosition.x
+                root.pointerPanelY = panelPosition.y
+                root.pointerSelectionArmed = true
+              }
               onClicked: {
                 root.selectedIndex = index
                 root.openCurrent()
