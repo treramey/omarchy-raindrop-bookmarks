@@ -310,7 +310,15 @@ Item {
               Text { width: parent.width; text: modelData.domain || modelData.link; textFormat: Text.PlainText; color: root.foreground; opacity: 0.58; font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
             }
             Text { anchors.right: parent.right; anchors.rightMargin: Style.spacing.rowPaddingX; anchors.verticalCenter: parent.verticalCenter; visible: index === root.selectedIndex; text: "↵"; textFormat: Text.PlainText; color: root.selectedText; font.family: root.fontFamily; font.pixelSize: Style.font.title }
-            MouseArea { id: mouse; anchors.fill: parent; hoverEnabled: true; onEntered: root.selectedIndex = index; onClicked: root.openCurrent() }
+            MouseArea {
+              id: mouse
+              anchors.fill: parent
+              hoverEnabled: true
+              onClicked: {
+                root.selectedIndex = index
+                root.openCurrent()
+              }
+            }
           }
         }
       }
