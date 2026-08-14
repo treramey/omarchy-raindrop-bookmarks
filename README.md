@@ -4,6 +4,8 @@ A keyboard-first Omarchy Quattro overlay for fuzzy-searching your
 [Raindrop.io](https://raindrop.io/) bookmarks. Bookmark covers are cached as
 small PNG thumbnails, with a letter tile used whenever no usable cover exists.
 
+![Raindrop Bookmarks overlay showing saved bookmarks](assets/raindrop-bookmarks.png)
+
 ## Requirements
 
 - Omarchy Quattro
