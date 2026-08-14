@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.treramey.raindrop-bookmarks",
+  "name": "Raindrop Bookmarks",
+  "version": "1.0.0",
+  "author": "Trevor Ramey",
+  "license": "MIT",
+  "description": "Fuzzy-search Raindrop.io bookmarks with cached cover images.",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "RaindropBookmarks.qml"
+  }
+}

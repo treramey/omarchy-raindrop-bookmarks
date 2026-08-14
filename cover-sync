@@ -1,0 +1,112 @@
+#!/bin/bash
+set -u
+
+token_path=${1:-${RAINDROP_TOKEN_FILE:-$HOME/.config/raindrop/token}}
+cover_dir=${2:-${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-shell/raindrop-bookmarks/covers}
+stamp="$cover_dir/.last-sync"
+api_url="https://api.raindrop.io/rest/v1/raindrops/0"
+refresh_seconds=300
+per_page=50
+parallel_downloads=6
+
+emit_index() {
+  [[ -d "$cover_dir" ]] || return 0
+  while IFS= read -r -d '' path; do
+    filename=${path##*/}
+    id=${filename%%.*}
+    [[ "$id" =~ ^[0-9]+$ ]] && printf '%s\t%s\n' "$id" "$path"
+  done < <(find "$cover_dir" -maxdepth 1 -type f -name '*.png' -print0)
+}
+
+fail() {
+  printf 'raindrop cover sync: %s\n' "$*" >&2
+  emit_index
+  exit 0
+}
+
+for command in curl jq file magick; do
+  command -v "$command" >/dev/null 2>&1 || fail "missing dependency: $command"
+done
+
+[[ -r "$token_path" ]] || fail "token not found: $token_path"
+token=$(tr -d '\r\n' < "$token_path")
+[[ -n "$token" ]] || fail "token is empty: $token_path"
+
+mkdir -p "$cover_dir"
+
+if [[ -f "$stamp" ]]; then
+  now=$(date +%s)
+  modified=$(stat -c %Y "$stamp" 2>/dev/null || echo 0)
+  if (( now - modified < refresh_seconds )); then
+    emit_index
+    exit 0
+  fi
+fi
+
+records=$(mktemp)
+trap 'rm -f "$records"' EXIT
+
+page=0
+while :; do
+  response=$(curl --fail --silent --show-error --max-time 20 \
+    -H "Authorization: Bearer $token" \
+    "$api_url?perpage=$per_page&page=$page") || fail "could not fetch page $page"
+
+  count=$(jq '.items | length' <<<"$response") || fail "invalid API response"
+  jq -r '.items[] | [
+      (._id | tostring),
+      (if (.cover // "") != "" then .cover
+       elif ((.media // []) | length) > 0 then (.media[0].link // "")
+       else "" end)
+    ] | @tsv' <<<"$response" >> "$records" || fail "could not read cover metadata"
+
+  (( count < per_page )) && break
+  ((page++))
+done
+
+sync_cover() {
+  local id=$1
+  local url=$2
+  local target="$cover_dir/$id.png"
+  local download
+  local converted
+  local mime
+
+  [[ -n "$url" ]] || return 0
+  [[ -s "$target" ]] && return 0
+
+  download=$(mktemp "$cover_dir/.download-$id-XXXXXX") || return 0
+  converted="$download.png"
+
+  if ! curl --fail --location --silent --show-error --max-time 15 \
+      --connect-timeout 5 --output "$download" -- "$url" 2>/dev/null; then
+    rm -f "$download"
+    return 0
+  fi
+
+  mime=$(file --brief --mime-type "$download" 2>/dev/null)
+  if [[ "$mime" != image/* ]] \
+      || ! magick "${download}[0]" -thumbnail '96x96>' -strip "$converted" 2>/dev/null; then
+    rm -f "$download" "$converted"
+    return 0
+  fi
+
+  mv -f "$converted" "$target"
+  rm -f "$download"
+}
+
+active=0
+while IFS=$'\t' read -r id url; do
+  [[ "$id" =~ ^[0-9]+$ ]] || continue
+  sync_cover "$id" "$url" &
+  ((active++))
+  if (( active >= parallel_downloads )); then
+    wait -n || true
+    ((active--))
+  fi
+done < "$records"
+wait
+
+find "$cover_dir" -maxdepth 1 -type f -name '*.png' -mtime +30 -delete
+touch "$stamp"
+emit_index
