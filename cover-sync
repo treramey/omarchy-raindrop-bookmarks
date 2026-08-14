@@ -1,13 +1,24 @@
 #!/bin/bash
 set -u
+umask 077
 
+plugin_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 token_path=${1:-${RAINDROP_TOKEN_FILE:-$HOME/.config/raindrop/token}}
 cover_dir=${2:-${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-shell/raindrop-bookmarks/covers}
 stamp="$cover_dir/.last-sync"
+url_guard="$plugin_dir/validate-cover-url"
+magick_policy_dir="$plugin_dir/imagemagick"
 api_url="https://api.raindrop.io/rest/v1/raindrops/0"
 refresh_seconds=300
 per_page=50
-parallel_downloads=6
+max_pages=20
+parallel_downloads=4
+max_new_covers_per_sync=100
+max_api_bytes=$((10 * 1024 * 1024))
+max_cover_bytes=$((5 * 1024 * 1024))
+max_image_width=8192
+max_image_height=8192
+max_image_area=$((32 * 1024 * 1024))
 
 emit_index() {
   [[ -d "$cover_dir" ]] || return 0
@@ -24,9 +35,11 @@ fail() {
   exit 0
 }
 
-for command in curl jq file magick; do
+for command in curl jq file magick python3 timeout; do
   command -v "$command" >/dev/null 2>&1 || fail "missing dependency: $command"
 done
+[[ -x "$url_guard" ]] || fail "URL guard is missing or not executable"
+[[ -r "$magick_policy_dir/policy.xml" ]] || fail "ImageMagick policy is missing"
 
 [[ -r "$token_path" ]] || fail "token not found: $token_path"
 token=$(tr -d '\r\n' < "$token_path")
@@ -44,15 +57,23 @@ if [[ -f "$stamp" ]]; then
 fi
 
 records=$(mktemp)
-trap 'rm -f "$records"' EXIT
+auth_header=$(mktemp)
+trap 'rm -f "$records" "$auth_header"' EXIT
+printf 'Authorization: Bearer %s\n' "$token" > "$auth_header"
+unset token
 
 page=0
 while :; do
-  response=$(curl --fail --silent --show-error --max-time 20 \
-    -H "Authorization: Bearer $token" \
-    "$api_url?perpage=$per_page&page=$page") || fail "could not fetch page $page"
+  response=$(curl --fail --silent --show-error \
+    --proto '=https' --proto-redir '=https' --max-redirs 0 --noproxy '*' \
+    --connect-timeout 5 --max-time 20 --max-filesize "$max_api_bytes" \
+    --header "@$auth_header" \
+    --url "$api_url?perpage=$per_page&page=$page") \
+    || fail "could not fetch page $page"
 
   count=$(jq '.items | length' <<<"$response") || fail "invalid API response"
+  [[ "$count" =~ ^[0-9]+$ ]] || fail "invalid item count"
+  (( count <= per_page )) || fail "API returned too many items"
   jq -r '.items[] | [
       (._id | tostring),
       (if (.cover // "") != "" then .cover
@@ -62,7 +83,19 @@ while :; do
 
   (( count < per_page )) && break
   ((page++))
+  (( page >= max_pages )) && break
 done
+
+run_magick() {
+  timeout --kill-after=2 12 \
+    env MAGICK_CONFIGURE_PATH="$magick_policy_dir" \
+      MAGICK_MEMORY_LIMIT=64MiB \
+      MAGICK_MAP_LIMIT=128MiB \
+      MAGICK_DISK_LIMIT=0 \
+      MAGICK_THREAD_LIMIT=1 \
+      MAGICK_TIME_LIMIT=10 \
+      magick "$@"
+}
 
 sync_cover() {
   local id=$1
@@ -70,26 +103,73 @@ sync_cover() {
   local target="$cover_dir/$id.png"
   local download
   local converted
+  local validated
+  local host
+  local address
+  local canonical_url
+  local resolve_address
   local mime
+  local coder
+  local size
+  local dimensions
+  local width
+  local height
 
   [[ -n "$url" ]] || return 0
-  if [[ -s "$target" ]]; then
+  if [[ -f "$target" && ! -L "$target" && -s "$target" ]]; then
     touch "$target"
     return 0
   fi
 
+  validated=$("$url_guard" "$url" 2>/dev/null) || return 0
+  IFS=$'\t' read -r host address canonical_url <<< "$validated"
+  [[ -n "$host" && -n "$address" && -n "$canonical_url" ]] || return 0
+  resolve_address="$host:443:$address"
+
   download=$(mktemp "$cover_dir/.download-$id-XXXXXX") || return 0
   converted="$download.png"
 
-  if ! curl --fail --location --silent --show-error --max-time 15 \
-      --connect-timeout 5 --output "$download" -- "$url" 2>/dev/null; then
+  if ! curl --fail --silent --show-error \
+      --proto '=https' --proto-redir '=https' --max-redirs 0 --noproxy '*' \
+      --resolve "$resolve_address" \
+      --connect-timeout 3 --max-time 12 --speed-limit 1024 --speed-time 5 \
+      --max-filesize "$max_cover_bytes" \
+      --output "$download" --url "$canonical_url" 2>/dev/null; then
+    rm -f "$download"
+    return 0
+  fi
+
+  size=$(stat -c %s "$download" 2>/dev/null || echo 0)
+  if [[ ! "$size" =~ ^[0-9]+$ ]] || (( size == 0 || size > max_cover_bytes )); then
     rm -f "$download"
     return 0
   fi
 
   mime=$(file --brief --mime-type "$download" 2>/dev/null)
-  if [[ "$mime" != image/* ]] \
-      || ! magick "${download}[0]" -thumbnail '96x96>' -strip "$converted" 2>/dev/null; then
+  case "$mime" in
+    image/png) coder=PNG ;;
+    image/jpeg) coder=JPEG ;;
+    image/gif) coder=GIF ;;
+    image/webp) coder=WEBP ;;
+    *) rm -f "$download"; return 0 ;;
+  esac
+
+  dimensions=$(run_magick identify -ping -format '%w %h' \
+    "${coder}:${download}[0]" 2>/dev/null) || {
+    rm -f "$download" "$converted"
+    return 0
+  }
+  read -r width height <<< "$dimensions"
+  if [[ ! "$width" =~ ^[0-9]+$ || ! "$height" =~ ^[0-9]+$ ]] \
+      || (( width == 0 || height == 0 \
+            || width > max_image_width || height > max_image_height \
+            || width * height > max_image_area )); then
+    rm -f "$download" "$converted"
+    return 0
+  fi
+
+  if ! run_magick "${coder}:${download}[0]" -auto-orient \
+      -thumbnail '96x96>' -strip "PNG:$converted" 2>/dev/null; then
     rm -f "$download" "$converted"
     return 0
   fi
@@ -99,8 +179,15 @@ sync_cover() {
 }
 
 active=0
+new_covers=0
 while IFS=$'\t' read -r id url; do
-  [[ "$id" =~ ^[0-9]+$ ]] || continue
+  [[ "$id" =~ ^[0-9]{1,20}$ ]] || continue
+  [[ -n "$url" ]] || continue
+  target="$cover_dir/$id.png"
+  if [[ ! -f "$target" || -L "$target" || ! -s "$target" ]]; then
+    (( new_covers >= max_new_covers_per_sync )) && continue
+    ((new_covers++))
+  fi
   sync_cover "$id" "$url" &
   ((active++))
   if (( active >= parallel_downloads )); then

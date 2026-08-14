@@ -7,14 +7,14 @@ small PNG thumbnails, with a letter tile used whenever no usable cover exists.
 ## Requirements
 
 - Omarchy Quattro
-- `curl`, `jq`, `file`, and ImageMagick's `magick` command
+- `curl`, `jq`, `file`, `python3`, `timeout`, and ImageMagick's `magick`
 - A Raindrop.io test token from
   [Settings → Integrations](https://app.raindrop.io/settings/integrations)
 
 Install the non-default dependencies with:
 
 ```sh
-omarchy pkg add jq imagemagick
+omarchy pkg add jq imagemagick python
 ```
 
 ## Configure
@@ -56,7 +56,11 @@ Omarchy plugins run unsandboxed with your user permissions. This plugin:
 
 - reads only the configured Raindrop token file;
 - sends that token only to `https://api.raindrop.io`;
-- downloads bookmark cover URLs returned by the Raindrop API;
+- downloads only HTTPS cover URLs on port 443 whose DNS answers are all public;
+- pins each cover request to its validated address, disables redirects and
+  proxies, and enforces strict connection, transfer-time, and 5 MiB limits;
+- accepts only PNG, JPEG, GIF, and WebP covers and processes them under a
+  restrictive ImageMagick resource and codec policy;
 - stores generated thumbnails under
   `~/.cache/omarchy-shell/raindrop-bookmarks/covers`; and
 - opens selected links through `xdg-open`.
@@ -80,6 +84,7 @@ user-owned configuration that may be shared by other Raindrop tools.
 omarchy plugin validate .
 qmllint -I "$OMARCHY_PATH/shell" RaindropBookmarks.qml
 bash -n cover-sync
+tests/security.sh
 ```
 
 The implementation follows the Omarchy marketplace

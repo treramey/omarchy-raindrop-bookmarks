@@ -106,7 +106,11 @@ Item {
     fetch.command = ["bash", "-c",
       "[[ -r \"$1\" ]] || { printf 'Raindrop token not found: %s\\n' \"$1\" >&2; exit 1; }; "
         + "token=$(tr -d '\\r\\n' < \"$1\"); [[ -n \"$token\" ]] || { echo 'Raindrop token is empty' >&2; exit 1; }; "
-        + "exec curl --fail --silent --show-error --max-time 15 -H \"Authorization: Bearer $token\" \"$2\"",
+        + "header=$(mktemp); chmod 600 \"$header\"; trap 'rm -f \"$header\"' EXIT; "
+        + "printf 'Authorization: Bearer %s\\n' \"$token\" > \"$header\"; unset token; "
+        + "curl --fail --silent --show-error --proto '=https' --proto-redir '=https' "
+        + "--max-redirs 0 --noproxy '*' --connect-timeout 5 --max-time 15 "
+        + "--max-filesize 10485760 --header \"@$header\" --url \"$2\"",
       "raindrop-fetch", tokenPath,
       "https://api.raindrop.io/rest/v1/raindrops/0?perpage=50&page=" + page]
     fetch.running = true

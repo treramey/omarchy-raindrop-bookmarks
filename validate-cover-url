@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Validate and resolve a remote cover URL to a pinned public IPv4 address."""
+
+from __future__ import annotations
+
+import ipaddress
+import re
+import socket
+import sys
+from urllib.parse import urlsplit
+
+
+def reject(message: str) -> "NoReturn":
+    print(f"invalid cover URL: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+if len(sys.argv) != 2:
+    reject("expected one URL")
+
+url = sys.argv[1]
+if len(url) > 4096:
+    reject("URL is too long")
+if not url or any(ord(character) <= 32 for character in url) or "\\" in url:
+    reject("control character, whitespace, or backslash")
+
+try:
+    parsed = urlsplit(url)
+    port = parsed.port
+except ValueError as error:
+    reject(str(error))
+
+if parsed.scheme != "https":
+    reject("HTTPS is required")
+if not parsed.hostname:
+    reject("hostname is required")
+if parsed.username is not None or parsed.password is not None:
+    reject("credentials are not allowed")
+if port not in (None, 443):
+    reject("only port 443 is allowed")
+
+host = parsed.hostname.lower()
+try:
+    host.encode("ascii")
+except UnicodeEncodeError:
+    reject("hostname must be ASCII")
+
+if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+    reject("local hostname")
+if len(host) > 253 or host.startswith(".") or host.endswith("."):
+    reject("invalid hostname")
+if not re.fullmatch(r"[a-z0-9.-]+", host):
+    reject("invalid hostname characters")
+if any(
+    not label
+    or len(label) > 63
+    or label.startswith("-")
+    or label.endswith("-")
+    for label in host.split(".")
+):
+    reject("invalid hostname label")
+if parsed.netloc.lower() not in (host, f"{host}:443"):
+    reject("ambiguous authority")
+
+try:
+    answers = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+except socket.gaierror:
+    reject("hostname did not resolve")
+
+addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+for answer in answers:
+    address = ipaddress.ip_address(answer[4][0])
+    if address not in addresses:
+        addresses.append(address)
+
+if not addresses or any(not address.is_global for address in addresses):
+    reject("hostname resolves to a non-public address")
+
+ipv4 = next(
+    (address for address in addresses if isinstance(address, ipaddress.IPv4Address)),
+    None,
+)
+if ipv4 is None:
+    reject("hostname has no public IPv4 address")
+
+canonical_url = parsed._replace(
+    scheme="https", netloc=host, fragment=""
+).geturl()
+print(f"{host}\t{ipv4}\t{canonical_url}")
