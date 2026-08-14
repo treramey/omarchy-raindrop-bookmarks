@@ -6,6 +6,7 @@ plugin_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 token_path=${1:-${RAINDROP_TOKEN_FILE:-$HOME/.config/raindrop/token}}
 cover_dir=${2:-${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-shell/raindrop-bookmarks/covers}
 stamp="$cover_dir/.last-sync"
+next_page_file="$cover_dir/.next-page"
 url_guard="$plugin_dir/validate-cover-url"
 magick_policy_dir="$plugin_dir/imagemagick"
 api_url="https://api.raindrop.io/rest/v1/raindrops/0"
@@ -19,6 +20,7 @@ max_cover_bytes=$((5 * 1024 * 1024))
 max_image_width=8192
 max_image_height=8192
 max_image_area=$((32 * 1024 * 1024))
+cover_refresh_seconds=$((7 * 24 * 60 * 60))
 
 emit_index() {
   [[ -d "$cover_dir" ]] || return 0
@@ -63,8 +65,14 @@ printf 'Authorization: Bearer %s\n' "$token" > "$auth_header"
 unset token
 
 page=0
+if [[ -f "$next_page_file" && ! -L "$next_page_file" ]]; then
+  read -r page < "$next_page_file" || page=0
+fi
+[[ "$page" =~ ^[0-9]+$ ]] || page=0
+pages_fetched=0
+reached_end=false
 while :; do
-  response=$(curl --fail --silent --show-error \
+  response=$(curl -q --fail --silent --show-error \
     --proto '=https' --proto-redir '=https' --max-redirs 0 --noproxy '*' \
     --connect-timeout 5 --max-time 20 --max-filesize "$max_api_bytes" \
     --header "@$auth_header" \
@@ -81,10 +89,20 @@ while :; do
        else "" end)
     ] | @tsv' <<<"$response" >> "$records" || fail "could not read cover metadata"
 
-  (( count < per_page )) && break
+  ((pages_fetched++))
+  if (( count < per_page )); then
+    reached_end=true
+    break
+  fi
   ((page++))
-  (( page >= max_pages )) && break
+  (( pages_fetched >= max_pages )) && break
 done
+
+if [[ "$reached_end" == true ]]; then
+  printf '0\n' > "$next_page_file"
+else
+  printf '%s\n' "$page" > "$next_page_file"
+fi
 
 run_magick() {
   timeout --kill-after=2 12 \
@@ -101,6 +119,7 @@ sync_cover() {
   local id=$1
   local url=$2
   local target="$cover_dir/$id.png"
+  local url_file="$cover_dir/$id.url"
   local download
   local converted
   local validated
@@ -114,22 +133,32 @@ sync_cover() {
   local dimensions
   local width
   local height
+  local cached_url=""
+  local modified
+  local now
 
   [[ -n "$url" ]] || return 0
-  if [[ -f "$target" && ! -L "$target" && -s "$target" ]]; then
-    touch "$target"
-    return 0
-  fi
-
   validated=$("$url_guard" "$url" 2>/dev/null) || return 0
   IFS=$'\t' read -r host address canonical_url <<< "$validated"
   [[ -n "$host" && -n "$address" && -n "$canonical_url" ]] || return 0
   resolve_address="$host:443:$address"
 
+  if [[ -f "$target" && ! -L "$target" && -s "$target" \
+      && -f "$url_file" && ! -L "$url_file" ]]; then
+    read -r cached_url < "$url_file" || cached_url=""
+    now=$(date +%s)
+    modified=$(stat -c %Y "$target" 2>/dev/null || echo 0)
+    if [[ "$cached_url" == "$canonical_url" \
+        && "$modified" =~ ^[0-9]+$ \
+        && $((now - modified)) -lt $cover_refresh_seconds ]]; then
+      return 0
+    fi
+  fi
+
   download=$(mktemp "$cover_dir/.download-$id-XXXXXX") || return 0
   converted="$download.png"
 
-  if ! curl --fail --silent --show-error \
+  if ! curl -q --fail --silent --show-error \
       --proto '=https' --proto-redir '=https' --max-redirs 0 --noproxy '*' \
       --resolve "$resolve_address" \
       --connect-timeout 3 --max-time 12 --speed-limit 1024 --speed-time 5 \
@@ -175,6 +204,8 @@ sync_cover() {
   fi
 
   mv -f "$converted" "$target"
+  printf '%s\n' "$canonical_url" > "$url_file.tmp"
+  mv -f "$url_file.tmp" "$url_file"
   rm -f "$download"
 }
 
@@ -198,5 +229,6 @@ done < "$records"
 wait
 
 find "$cover_dir" -maxdepth 1 -type f -name '*.png' -mtime +30 -delete
+find "$cover_dir" -maxdepth 1 -type f -name '*.url' -mtime +30 -delete
 touch "$stamp"
 emit_index

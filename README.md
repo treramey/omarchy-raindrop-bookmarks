@@ -68,13 +68,15 @@ Omarchy plugins run unsandboxed with your user permissions. This plugin:
 - opens selected links through `xdg-open`.
 
 The token is never copied into the plugin directory. Cover thumbnails older
-than 30 days are removed during synchronization.
+than seven days are refreshed, and inactive thumbnails older than 30 days are
+removed during synchronization. Bookmark data refreshes when the overlay is
+opened after five minutes.
 
 ## Remove
 
 ```sh
 omarchy plugin remove io.github.treramey.raindrop-bookmarks
-rm -rf ~/.cache/omarchy-shell/raindrop-bookmarks
+rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-shell/raindrop-bookmarks"
 ```
 
 Removal intentionally leaves `~/.config/raindrop/token` in place because it is

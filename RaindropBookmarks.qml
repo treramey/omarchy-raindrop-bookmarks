@@ -17,6 +17,9 @@ Item {
   property var results: []
   property int selectedIndex: 0
   property int page: 0
+  property var pendingBookmarks: []
+  property double lastFetchMs: 0
+  readonly property int refreshIntervalMs: 5 * 60 * 1000
   property string errorMessage: ""
   readonly property string pluginId: "io.github.treramey.raindrop-bookmarks"
   property string configHome: Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")
@@ -46,10 +49,9 @@ Item {
     filterText = ""
     selectedIndex = 0
     syncCovers()
-    if (!bookmarks.length && !fetch.running) {
-      page = 0
-      errorMessage = ""
-      fetchPage()
+    if (!fetch.running && (!bookmarks.length || Date.now() - lastFetchMs >= refreshIntervalMs)) {
+      filter()
+      startFetch()
     } else filter()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -73,7 +75,12 @@ Item {
 
   function openCurrent() {
     if (selectedIndex < 0 || selectedIndex >= results.length) return
-    Quickshell.execDetached(["xdg-open", results[selectedIndex].link])
+    var link = String(results[selectedIndex].link || "")
+    if (!/^https?:\/\/[^\s]+$/i.test(link)) {
+      errorMessage = "Only HTTP and HTTPS bookmarks can be opened"
+      return
+    }
+    Quickshell.execDetached(["xdg-open", link])
     close()
   }
 
@@ -91,15 +98,28 @@ Item {
       if (separator > 0) {
         var id = entries[i].slice(0, separator)
         var path = entries[i].slice(separator + 1)
-        if (/^\d+$/.test(id) && path) lookup[id] = "file://" + path
+        if (/^\d+$/.test(id) && path) lookup[id] = fileUrl(path)
       }
     }
     coverLookup = lookup
   }
 
+  function fileUrl(path) {
+    return "file://" + String(path).split("/").map(function(part) {
+      return encodeURIComponent(part)
+    }).join("/")
+  }
+
   function coverSource(bookmark) {
     if (!bookmark || bookmark._id === undefined || bookmark._id === null) return ""
     return coverLookup[String(bookmark._id)] || ""
+  }
+
+  function startFetch() {
+    page = 0
+    pendingBookmarks = []
+    errorMessage = ""
+    fetchPage()
   }
 
   function fetchPage() {
@@ -108,7 +128,7 @@ Item {
         + "token=$(tr -d '\\r\\n' < \"$1\"); [[ -n \"$token\" ]] || { echo 'Raindrop token is empty' >&2; exit 1; }; "
         + "header=$(mktemp); chmod 600 \"$header\"; trap 'rm -f \"$header\"' EXIT; "
         + "printf 'Authorization: Bearer %s\\n' \"$token\" > \"$header\"; unset token; "
-        + "curl --fail --silent --show-error --proto '=https' --proto-redir '=https' "
+        + "curl -q --fail --silent --show-error --proto '=https' --proto-redir '=https' "
         + "--max-redirs 0 --noproxy '*' --connect-timeout 5 --max-time 15 "
         + "--max-filesize 10485760 --header \"@$header\" --url \"$2\"",
       "raindrop-fetch", tokenPath,
@@ -118,10 +138,17 @@ Item {
 
   function handleResponse(text) {
     try {
-      var items = (JSON.parse(text).items || [])
-      bookmarks = bookmarks.concat(items)
-      filter()
+      var response = JSON.parse(text)
+      if (!response || !Array.isArray(response.items)) throw new Error("invalid items")
+      var items = response.items
+      pendingBookmarks = pendingBookmarks.concat(items)
       if (items.length === 50) { page++; fetchPage() }
+      else {
+        bookmarks = pendingBookmarks
+        lastFetchMs = Date.now()
+        errorMessage = ""
+        filter()
+      }
     } catch (error) { errorMessage = "Could not read the Raindrop response" }
   }
 
@@ -205,6 +232,7 @@ Item {
           Text {
             anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
             text: root.filterText || (root.bookmarks.length ? "Search " + root.bookmarks.length + " bookmarks…" : "Loading bookmarks…")
+            textFormat: Text.PlainText
             color: root.foreground; opacity: root.filterText ? 1 : 0.58
             font.family: root.fontFamily; font.pixelSize: Style.font.title
             elide: Text.ElideRight
@@ -216,6 +244,7 @@ Item {
           height: Style.space(28)
           verticalAlignment: Text.AlignVCenter
           text: root.filterText ? "RESULTS" : "ALL BOOKMARKS"
+          textFormat: Text.PlainText
           color: root.foreground; opacity: 0.62
           font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.weight: Font.DemiBold
         }
@@ -224,6 +253,7 @@ Item {
           visible: root.errorMessage !== ""
           width: parent.width
           text: root.errorMessage
+          textFormat: Text.PlainText
           color: Color.urgent
           wrapMode: Text.Wrap
           font.family: root.fontFamily
@@ -256,6 +286,7 @@ Item {
                 anchors.centerIn: parent
                 visible: coverImage.status !== Image.Ready
                 text: (modelData.title || modelData.domain || "?").charAt(0).toUpperCase()
+                textFormat: Text.PlainText
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
@@ -275,10 +306,10 @@ Item {
               anchors.left: icon.right; anchors.leftMargin: Style.spacing.md; anchors.right: parent.right
               anchors.rightMargin: Style.space(44); anchors.verticalCenter: parent.verticalCenter
               spacing: Style.spacing.xs
-              Text { width: parent.width; text: modelData.title || modelData.link; color: index === root.selectedIndex ? root.selectedText : root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; elide: Text.ElideRight }
-              Text { width: parent.width; text: modelData.domain || modelData.link; color: root.foreground; opacity: 0.58; font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
+              Text { width: parent.width; text: modelData.title || modelData.link; textFormat: Text.PlainText; color: index === root.selectedIndex ? root.selectedText : root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; elide: Text.ElideRight }
+              Text { width: parent.width; text: modelData.domain || modelData.link; textFormat: Text.PlainText; color: root.foreground; opacity: 0.58; font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
             }
-            Text { anchors.right: parent.right; anchors.rightMargin: Style.spacing.rowPaddingX; anchors.verticalCenter: parent.verticalCenter; visible: index === root.selectedIndex; text: "↵"; color: root.selectedText; font.family: root.fontFamily; font.pixelSize: Style.font.title }
+            Text { anchors.right: parent.right; anchors.rightMargin: Style.spacing.rowPaddingX; anchors.verticalCenter: parent.verticalCenter; visible: index === root.selectedIndex; text: "↵"; textFormat: Text.PlainText; color: root.selectedText; font.family: root.fontFamily; font.pixelSize: Style.font.title }
             MouseArea { id: mouse; anchors.fill: parent; hoverEnabled: true; onEntered: root.selectedIndex = index; onClicked: root.openCurrent() }
           }
         }

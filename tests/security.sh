@@ -76,6 +76,10 @@ cat > "$fake_bin/curl" <<'CURL'
 set -euo pipefail
 
 arguments=("$@")
+[[ ${arguments[0]:-} == -q ]] || {
+  echo "curl must ignore user configuration with -q as its first argument" >&2
+  exit 89
+}
 url=""
 output=""
 
@@ -109,12 +113,24 @@ require_pair --noproxy '*'
 case "$url" in
   https://api.raindrop.io/*)
     require_pair --max-filesize 10485760
-    cat "$API_FIXTURE"
+    if [[ -n ${PAGINATION_MODE:-} ]]; then
+      python3 - <<'PY'
+import json
+print(json.dumps({"items": [{"_id": index, "cover": ""} for index in range(50)]}))
+PY
+    else
+      cat "$API_FIXTURE"
+    fi
     ;;
   https://1.1.1.1/public.png)
     require_pair --resolve '1.1.1.1:443:1.1.1.1'
     require_pair --max-filesize 5242880
     cp "$IMAGE_FIXTURE" "$output"
+    ;;
+  https://1.1.1.1/changed.png)
+    require_pair --resolve '1.1.1.1:443:1.1.1.1'
+    require_pair --max-filesize 5242880
+    cp "$CHANGED_IMAGE_FIXTURE" "$output"
     ;;
   *)
     : > "$SSRF_MARKER"
@@ -136,5 +152,45 @@ PATH="$fake_bin:$PATH" \
 [[ ! -e "$fake_cache/1.png" ]]
 [[ -s "$fake_cache/2.png" ]]
 [[ $(wc -l < "$temporary_dir/curl.log") -eq 2 ]]
+
+magick -size 16x16 xc:red "$temporary_dir/changed.png"
+cat > "$temporary_dir/api.json" <<'JSON'
+{"items":[{"_id":2,"cover":"https://1.1.1.1/changed.png"}]}
+JSON
+rm -f "$fake_cache/.last-sync"
+PATH="$fake_bin:$PATH" \
+  API_FIXTURE="$temporary_dir/api.json" \
+  IMAGE_FIXTURE="$temporary_dir/allowed.png" \
+  CHANGED_IMAGE_FIXTURE="$temporary_dir/changed.png" \
+  CURL_LOG="$temporary_dir/curl.log" \
+  SSRF_MARKER="$temporary_dir/ssrf-attempted" \
+  "$repo_dir/cover-sync" "$temporary_dir/token" "$fake_cache" \
+  > "$temporary_dir/index-changed.tsv"
+compare -metric AE "$fake_cache/2.png" "$temporary_dir/changed.png" null: \
+  >/dev/null 2>&1
+
+pagination_cache="$temporary_dir/pagination-cache"
+pagination_log="$temporary_dir/pagination.log"
+PATH="$fake_bin:$PATH" \
+  PAGINATION_MODE=1 \
+  API_FIXTURE="$temporary_dir/api.json" \
+  IMAGE_FIXTURE="$temporary_dir/allowed.png" \
+  CHANGED_IMAGE_FIXTURE="$temporary_dir/changed.png" \
+  CURL_LOG="$pagination_log" \
+  SSRF_MARKER="$temporary_dir/ssrf-attempted" \
+  "$repo_dir/cover-sync" "$temporary_dir/token" "$pagination_cache" >/dev/null
+[[ $(< "$pagination_cache/.next-page") == 20 ]]
+rm -f "$pagination_cache/.last-sync"
+PATH="$fake_bin:$PATH" \
+  PAGINATION_MODE=1 \
+  API_FIXTURE="$temporary_dir/api.json" \
+  IMAGE_FIXTURE="$temporary_dir/allowed.png" \
+  CHANGED_IMAGE_FIXTURE="$temporary_dir/changed.png" \
+  CURL_LOG="$pagination_log" \
+  SSRF_MARKER="$temporary_dir/ssrf-attempted" \
+  "$repo_dir/cover-sync" "$temporary_dir/token" "$pagination_cache" >/dev/null
+[[ $(< "$pagination_cache/.next-page") == 40 ]]
+grep -q 'page=0' "$pagination_log"
+grep -q 'page=20' "$pagination_log"
 
 printf 'security checks passed: %d unsafe URLs rejected\n' "${#rejects[@]}"
