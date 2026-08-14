@@ -12,5 +12,6 @@
 
 ## Safety
 
+- Run `omarchy plugin validate .` without a local `node_modules/` directory; Omarchy rejects symlinks anywhere in a plugin folder.
 - Preserve the cover pipeline's SSRF, DNS-pinning, curl, file-size, timeout, codec, and ImageMagick resource controls.
 - Run `bash -n cover-sync tests/security.sh`, `python3 -m py_compile validate-cover-url`, and `tests/security.sh` after changing network, cache, or image handling.

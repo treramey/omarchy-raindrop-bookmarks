@@ -85,7 +85,6 @@ user-owned configuration that may be shared by other Raindrop tools.
 ## Development
 
 ```sh
-pnpm install
 omarchy plugin validate .
 qmllint -I "$OMARCHY_PATH/shell" RaindropBookmarks.qml
 bash -n cover-sync
@@ -96,6 +95,15 @@ Runtime changes must include a Changesets entry (`pnpm changeset`) describing
 their semantic-version impact. After those changes reach `main`, the Changesets
 workflow creates or updates a release PR that synchronizes `package.json` and
 `manifest.json`. Commits use Conventional Commit subjects.
+
+Changesets tooling requires `pnpm install`. Its local `node_modules` tree
+contains symlinks, which Omarchy's plugin validator intentionally rejects.
+Remove it before validating the plugin folder:
+
+```sh
+rm -rf node_modules
+omarchy plugin validate .
+```
 
 The implementation follows the Omarchy marketplace
 [development](https://omarchyplugins.com/develop.html) and
