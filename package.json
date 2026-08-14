@@ -1,0 +1,17 @@
+{
+  "name": "io.github.treramey.raindrop-bookmarks",
+  "private": true,
+  "version": "1.0.2",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/treramey/omarchy-raindrop-bookmarks.git"
+  },
+  "packageManager": "pnpm@11.13.1",
+  "scripts": {
+    "changeset": "changeset",
+    "version": "bash scripts/version-manifest.sh"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.8"
+  }
+}

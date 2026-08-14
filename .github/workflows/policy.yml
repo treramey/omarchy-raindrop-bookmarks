@@ -1,0 +1,42 @@
+name: Policy
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  changesets:
+    name: Changeset policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Enforce changeset file
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          changed=$(git diff --name-only "origin/$BASE_REF"...HEAD)
+          if ! grep -qE '^(RaindropBookmarks\.qml|FuzzySearch\.js|cover-sync|validate-cover-url|imagemagick/)' <<<"$changed"; then
+            echo "No plugin runtime files changed; skipping changeset requirement."
+            exit 0
+          fi
+          if ! grep -E '^\.changeset/[^/]+\.md$' <<<"$changed" | grep -qv '^\.changeset/README\.md$'; then
+            echo "::error::A changeset is required. Run 'pnpm changeset', or 'pnpm changeset --empty' for no user-visible impact."
+            exit 1
+          fi
+          echo "Changeset file found."
+      - name: Validate changeset package name
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          for file in $(git diff --name-only "origin/$BASE_REF"...HEAD | grep -E '^\.changeset/[^/]+\.md$' | grep -v '^\.changeset/README\.md$'); do
+            [ -f "$file" ] || continue
+            if grep -qE '^"(graduate|@treramey/graduate)"' "$file"; then
+              echo "::error file=$file::Use package name \"io.github.treramey.raindrop-bookmarks\"."
+              exit 1
+            fi
+          done
