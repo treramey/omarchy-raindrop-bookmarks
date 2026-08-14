@@ -9,7 +9,8 @@
   "packageManager": "pnpm@11.13.1",
   "scripts": {
     "changeset": "changeset",
-    "version": "bash scripts/version-manifest.sh"
+    "version": "bash scripts/version-manifest.sh",
+    "tag-release": "bash scripts/tag-release.sh"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8"
