@@ -73,7 +73,10 @@ sync_cover() {
   local mime
 
   [[ -n "$url" ]] || return 0
-  [[ -s "$target" ]] && return 0
+  if [[ -s "$target" ]]; then
+    touch "$target"
+    return 0
+  fi
 
   download=$(mktemp "$cover_dir/.download-$id-XXXXXX") || return 0
   converted="$download.png"
