@@ -572,7 +572,7 @@ Item {
         Text {
           visible: root.onboardingPhase === "success"
           width: parent.width
-          text: "✓\nYour Raindrop account is ready. Loading bookmarks…"
+          text: "Your Raindrop account is ready. Loading bookmarks…"
           textFormat: Text.PlainText
           color: root.foreground
           wrapMode: Text.WordWrap
