@@ -21,6 +21,15 @@ Item {
   property double lastFetchMs: 0
   readonly property int refreshIntervalMs: 5 * 60 * 1000
   property string errorMessage: ""
+  property bool needsToken: false
+  property bool checkingToken: false
+  property bool savingToken: false
+  property bool tokenValidated: false
+  property bool validatingSubmission: false
+  property bool showToken: false
+  property string onboardingPhase: "entry"
+  property string onboardingError: ""
+  property string pendingToken: ""
   readonly property string pluginId: "io.github.treramey.raindrop-bookmarks"
   property string configHome: Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")
   property string cacheHome: Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache")
@@ -30,6 +39,8 @@ Item {
     : configHome + "/omarchy/plugins/" + pluginId
   property string coverDirectory: cacheHome + "/omarchy-shell/raindrop-bookmarks/covers"
   property string coverSyncPath: pluginDirectory + "/cover-sync"
+  property string configureTokenPath: pluginDirectory + "/configure-token"
+  property string validateTokenPath: pluginDirectory + "/validate-token"
   property var coverLookup: ({})
 
   property color background: Color.menu.background
@@ -40,14 +51,33 @@ Item {
   property var borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
   readonly property int cornerRadius: Style.cornerRadius
   property string fontFamily: Style.font.menuFamily
-  property int cardWidth: Math.min(Style.space(760), panel.width - Style.gapsOut * 2)
-  property int cardHeight: Math.min(Style.space(520), panel.height - Style.gapsOut * 2)
+  property int cardWidth: Math.min(Style.space(needsToken ? 580 : 760), panel.width - Style.gapsOut * 2)
+  property int cardHeight: Math.min(Style.space(needsToken ? 430 : 520), panel.height - Style.gapsOut * 2)
   property int rowHeight: Math.max(Style.space(54), Style.font.body + Style.font.caption + Style.spacing.rowPaddingX * 2)
 
   function open(payloadJson) {
+    showToken = false
     opened = true
     filterText = ""
     selectedIndex = 0
+    errorMessage = ""
+    onboardingError = ""
+    onboardingPhase = "entry"
+    checkToken()
+  }
+
+  function checkToken() {
+    if (tokenCheck.running) return
+    checkingToken = true
+    tokenCheck.command = ["bash", "-c",
+      "[[ -f \"$1\" && -r \"$1\" ]] && size=$(stat -Lc %s -- \"$1\") "
+        + "&& [[ \"$size\" =~ ^[0-9]+$ ]] && (( size > 0 && size <= 8192 ))",
+      "raindrop-token-check", tokenPath]
+    tokenCheck.running = true
+  }
+
+  function continueOpen() {
+    needsToken = false
     syncCovers()
     if (!fetch.running && (!bookmarks.length || Date.now() - lastFetchMs >= refreshIntervalMs)) {
       filter()
@@ -56,7 +86,49 @@ Item {
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
+  function saveToken() {
+    var token = tokenField.text.trim()
+    if (!token) {
+      onboardingError = "Paste your Raindrop test token first"
+      return
+    }
+    if (tokenWriter.running) return
+    onboardingError = ""
+    onboardingPhase = "checking"
+    pendingToken = token
+    savingToken = true
+    validatingSubmission = true
+    tokenValidator.command = [validateTokenPath]
+    tokenValidator.running = true
+  }
+
+  function validateToken() {
+    if (tokenValidator.running) return
+    onboardingError = ""
+    onboardingPhase = "checking"
+    validatingSubmission = false
+    tokenValidator.command = [validateTokenPath, "--file", tokenPath]
+    tokenValidator.running = true
+  }
+
+  function showTokenError(message) {
+    tokenValidated = false
+    needsToken = true
+    onboardingPhase = "entry"
+    onboardingError = message
+    Qt.callLater(function() { tokenField.forceActiveFocus() })
+  }
+
+  function handleFetchError(message) {
+    if (/\b(401|403)\b/.test(message)) {
+      showTokenError("Raindrop didn't accept this token. Check that you copied the complete test token, then try again.")
+    } else if (message) {
+      errorMessage = "Could not reach Raindrop. Check your connection and try again."
+    }
+  }
+
   function close() {
+    showToken = false
     opened = false
   }
 
@@ -155,7 +227,7 @@ Item {
   Process {
     id: fetch
     stdout: StdioCollector { onStreamFinished: root.handleResponse(this.text) }
-    stderr: StdioCollector { onStreamFinished: if (this.text.trim()) root.errorMessage = this.text.trim() }
+    stderr: StdioCollector { onStreamFinished: root.handleFetchError(this.text.trim()) }
   }
 
   Process {
@@ -163,7 +235,82 @@ Item {
     stdout: StdioCollector { onStreamFinished: root.handleCoverIndex(this.text) }
   }
 
-  Component.onCompleted: syncCovers()
+  Process {
+    id: tokenCheck
+    onExited: function(exitCode, exitStatus) {
+      root.checkingToken = false
+      if (exitCode === 0) {
+        if (root.tokenValidated) root.continueOpen()
+        else root.validateToken()
+      }
+      else {
+        root.needsToken = true
+        Qt.callLater(function() { tokenField.forceActiveFocus() })
+      }
+    }
+  }
+
+  Process {
+    id: tokenWriter
+    stdinEnabled: true
+    stderr: StdioCollector {
+      onStreamFinished: if (this.text.trim()) root.onboardingError = this.text.trim()
+    }
+    onStarted: {
+      write(root.pendingToken + "\n")
+      root.pendingToken = ""
+    }
+    onExited: function(exitCode, exitStatus) {
+      root.savingToken = false
+      if (exitCode === 0) {
+        root.validatingSubmission = false
+        root.tokenValidated = true
+        root.onboardingPhase = "success"
+        tokenField.text = ""
+        root.onboardingError = ""
+        connectionSuccess.restart()
+      } else if (!root.onboardingError) {
+        root.onboardingError = "Could not save the Raindrop token"
+      }
+      if (exitCode !== 0) root.onboardingPhase = "entry"
+    }
+  }
+
+  Process {
+    id: tokenValidator
+    stdinEnabled: true
+    stderr: StdioCollector { id: tokenValidationError; waitForEnd: true }
+    onStarted: if (root.validatingSubmission) write(root.pendingToken + "\n")
+    onExited: function(exitCode, exitStatus) {
+      if (exitCode === 0) {
+        if (root.validatingSubmission) {
+          tokenWriter.command = [root.configureTokenPath, root.tokenPath]
+          tokenWriter.running = true
+        } else {
+          root.tokenValidated = true
+          root.onboardingPhase = "success"
+          tokenField.text = ""
+          connectionSuccess.restart()
+        }
+      } else {
+        root.savingToken = false
+        root.pendingToken = ""
+        var detail = tokenValidationError.text.trim()
+        if (/\b(401|403)\b/.test(detail)) {
+          root.showTokenError("Raindrop didn't accept this token. Check that you copied the complete test token, then try again.")
+        } else {
+          root.showTokenError("Could not reach Raindrop. Check your connection and try again.")
+        }
+      }
+    }
+  }
+
+  Timer {
+    id: connectionSuccess
+    interval: 650
+    repeat: false
+    onTriggered: root.continueOpen()
+  }
 
   PanelWindow {
     id: panel
@@ -194,6 +341,7 @@ Item {
         id: keyCatcher
         anchors.fill: parent
         focus: true
+        Keys.enabled: !root.needsToken
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(event) {
           if (event.key === Qt.Key_Escape) {
@@ -217,6 +365,7 @@ Item {
       }
 
       Column {
+        visible: !root.needsToken
         anchors.fill: parent
         anchors.topMargin: card.contentTopInset
         anchors.rightMargin: card.contentRightInset
@@ -320,6 +469,116 @@ Item {
               }
             }
           }
+        }
+      }
+
+      Column {
+        visible: root.needsToken
+        width: Math.min(parent.width - card.contentLeftInset - card.contentRightInset, Style.space(500))
+        anchors.centerIn: parent
+        spacing: Style.spacing.md
+
+        Text {
+          width: parent.width
+          text: root.onboardingPhase === "success" ? "Connected" : "Connect Raindrop"
+          textFormat: Text.PlainText
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.title
+          font.weight: Font.DemiBold
+          horizontalAlignment: root.onboardingPhase === "success" ? Text.AlignHCenter : Text.AlignLeft
+        }
+
+        Text {
+          visible: root.onboardingPhase !== "success"
+          width: parent.width
+          text: "Create an app in the Raindrop integrations menu, copy its Test token, then paste it below."
+          textFormat: Text.PlainText
+          color: root.foreground
+          opacity: 0.82
+          wrapMode: Text.WordWrap
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+        }
+
+        Row {
+          visible: root.onboardingPhase !== "success"
+          width: parent.width
+          spacing: Style.spacing.sm
+
+          TextField {
+            id: tokenField
+            width: parent.width - revealToken.width - parent.spacing
+            password: !root.showToken
+            enabled: root.onboardingPhase === "entry" && !root.savingToken
+            placeholderText: "Paste token"
+            foreground: root.foreground
+            onAccepted: root.saveToken()
+            Keys.onPressed: function(event) {
+              if (event.key === Qt.Key_Escape) {
+                root.close()
+                event.accepted = true
+              }
+            }
+          }
+
+          Button {
+            id: revealToken
+            height: tokenField.height
+            text: root.showToken ? "Hide" : "Show"
+            bordered: true
+            enabled: root.onboardingPhase === "entry"
+            foreground: root.foreground
+            onClicked: root.showToken = !root.showToken
+          }
+        }
+
+        Text {
+          visible: root.onboardingPhase !== "success" && root.onboardingError !== ""
+          width: parent.width
+          text: root.onboardingError
+          textFormat: Text.PlainText
+          color: Color.urgent
+          wrapMode: Text.WordWrap
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        Row {
+          visible: root.onboardingPhase !== "success"
+          anchors.right: parent.right
+          spacing: Style.spacing.sm
+
+          Button {
+            text: "Get Raindrop token ↗"
+            foreground: root.foreground
+            onClicked: {
+              root.close()
+              Quickshell.execDetached(["xdg-open", "https://app.raindrop.io/settings/integrations"])
+            }
+          }
+
+          Button {
+            text: root.onboardingPhase === "checking" ? "Checking token…" : "Connect Raindrop"
+            selected: true
+            bordered: true
+            enabled: root.onboardingPhase === "entry" && !root.savingToken && tokenField.text.trim() !== ""
+            opacity: root.onboardingPhase === "checking" ? 0.72 : (enabled ? 1 : 0.45)
+            foreground: root.foreground
+            onClicked: root.saveToken()
+          }
+        }
+
+        Text {
+          visible: root.onboardingPhase === "success"
+          width: parent.width
+          text: "✓\nYour Raindrop account is ready. Loading bookmarks…"
+          textFormat: Text.PlainText
+          color: root.foreground
+          wrapMode: Text.WordWrap
+          horizontalAlignment: Text.AlignHCenter
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
         }
       }
     }
