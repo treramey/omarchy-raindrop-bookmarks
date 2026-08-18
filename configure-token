@@ -1,0 +1,33 @@
+#!/bin/bash
+set -euo pipefail
+
+umask 077
+
+token_path=${1:-${RAINDROP_TOKEN_FILE:-$HOME/.config/raindrop/token}}
+token_dir=$(dirname -- "$token_path")
+temporary_token=""
+
+cleanup() {
+  [[ -z "$temporary_token" ]] || rm -f -- "$temporary_token"
+}
+trap cleanup EXIT
+
+IFS= read -r token || {
+  echo "Raindrop token was not provided" >&2
+  exit 1
+}
+[[ -n "$token" ]] || {
+  echo "Raindrop token cannot be empty" >&2
+  exit 1
+}
+[[ "$token" != *$'\r'* ]] || {
+  echo "Raindrop token must be a single line" >&2
+  exit 1
+}
+
+install -d -m 700 -- "$token_dir"
+temporary_token=$(mktemp "$token_dir/.token-XXXXXX")
+printf '%s\n' "$token" > "$temporary_token"
+chmod 600 -- "$temporary_token"
+mv -f -- "$temporary_token" "$token_path"
+temporary_token=""
