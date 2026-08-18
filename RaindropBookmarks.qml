@@ -492,7 +492,7 @@ Item {
         Text {
           visible: root.onboardingPhase !== "success"
           width: parent.width
-          text: "Create an app in the Raindrop integrations menu and copy its Test token. Then reopen Raindrop Bookmarks and paste it here."
+          text: "Create an app in the Raindrop integrations menu, copy its Test token, then paste it below."
           textFormat: Text.PlainText
           color: root.foreground
           opacity: 0.82
