@@ -109,8 +109,9 @@ Or run the checks directly:
 ```sh
 omarchy plugin validate .
 qmllint -I "$OMARCHY_PATH/shell" RaindropBookmarks.qml
-bash -n configure-token cover-sync tests/configure-token.sh tests/security.sh
+bash -n configure-token validate-token cover-sync tests/configure-token.sh tests/validate-token.sh tests/security.sh
 tests/configure-token.sh
+tests/validate-token.sh
 tests/security.sh
 ```
 

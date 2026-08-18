@@ -1,0 +1,37 @@
+#!/bin/bash
+set -euo pipefail
+
+umask 077
+max_token_bytes=8192
+
+fail() {
+  echo "$1" >&2
+  exit 1
+}
+
+if [[ ${1:-} == --file ]]; then
+  [[ $# == 2 ]] || fail "Token validation received invalid arguments"
+  token_path=$2
+  [[ -f "$token_path" && -r "$token_path" ]] || fail "Raindrop token file is not readable"
+  token_size=$(stat -Lc %s -- "$token_path" 2>/dev/null) || fail "Could not read the Raindrop token file"
+  [[ "$token_size" =~ ^[0-9]+$ ]] || fail "Could not read the Raindrop token file"
+  (( token_size > 0 && token_size <= max_token_bytes )) || fail "Raindrop token file has an invalid size"
+  token=$(cat -- "$token_path")
+else
+  [[ $# == 0 ]] || fail "Token validation received invalid arguments"
+  IFS= read -r token || fail "Raindrop token was not provided"
+fi
+
+[[ -n "$token" && ${#token} -le max_token_bytes ]] || fail "Raindrop token has an invalid size"
+[[ "$token" != *$'\r'* && "$token" != *$'\n'* ]] || fail "Raindrop token must be a single line"
+
+auth_header=$(mktemp)
+trap 'rm -f "$auth_header"' EXIT
+printf 'Authorization: Bearer %s\n' "$token" > "$auth_header"
+unset token
+
+curl -q --fail --silent --show-error \
+  --proto '=https' --proto-redir '=https' --max-redirs 0 --noproxy '*' \
+  --connect-timeout 5 --max-time 15 --max-filesize 1048576 \
+  --header "@$auth_header" --output /dev/null \
+  --url 'https://api.raindrop.io/rest/v1/user'

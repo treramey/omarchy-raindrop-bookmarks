@@ -12,25 +12,27 @@ plugin_id=io.github.treramey.raindrop-bookmarks
 plugin_dir="$config_home/omarchy/plugins/$plugin_id"
 token_path=${RAINDROP_TOKEN_FILE:-$config_home/raindrop/token}
 backup_dir=$(mktemp -d)
-had_plugin=false
-had_token=false
-installed_test_plugin=false
+plugin_backed_up=false
+token_backed_up=false
+test_session_started=false
 
 restore() {
   local exit_code=$?
   trap - EXIT INT TERM
 
-  if [[ "$installed_test_plugin" == true ]]; then
+  if [[ "$test_session_started" == true || "$plugin_backed_up" == true || "$token_backed_up" == true ]]; then
     echo
     echo "Restoring your plugin and token…"
-    rm -rf -- "$plugin_dir"
-    if [[ "$had_plugin" == true ]]; then
+    if [[ "$test_session_started" == true ]]; then
+      rm -rf -- "$plugin_dir"
+      rm -f -- "$token_path"
+    fi
+    if [[ "$plugin_backed_up" == true ]]; then
       mkdir -p -- "$(dirname -- "$plugin_dir")"
       mv -- "$backup_dir/plugin" "$plugin_dir"
     fi
 
-    rm -f -- "$token_path"
-    if [[ "$had_token" == true ]]; then
+    if [[ "$token_backed_up" == true ]]; then
       mkdir -p -- "$(dirname -- "$token_path")"
       mv -- "$backup_dir/token" "$token_path"
     fi
@@ -46,26 +48,27 @@ trap restore EXIT INT TERM
 echo "Running checks…"
 (
   cd -- "$repo_dir"
-  bash -n configure-token cover-sync tests/configure-token.sh tests/security.sh
+  bash -n configure-token validate-token cover-sync tests/configure-token.sh tests/validate-token.sh tests/security.sh
   python3 -m py_compile validate-cover-url
   qmllint -I "$OMARCHY_PATH/shell" RaindropBookmarks.qml
   tests/configure-token.sh
+  tests/validate-token.sh
   tests/security.sh
   omarchy plugin validate .
 )
 
 mkdir -p -- "$(dirname -- "$plugin_dir")"
-installed_test_plugin=true
 if [[ -e "$plugin_dir" || -L "$plugin_dir" ]]; then
   mv -- "$plugin_dir" "$backup_dir/plugin"
-  had_plugin=true
+  plugin_backed_up=true
 fi
 
 if [[ -e "$token_path" || -L "$token_path" ]]; then
   mv -- "$token_path" "$backup_dir/token"
-  had_token=true
+  token_backed_up=true
 fi
 
+test_session_started=true
 mkdir -p -- "$plugin_dir"
 cp -a -- "$repo_dir/." "$plugin_dir/"
 rm -rf -- "$plugin_dir/.git" "$plugin_dir/node_modules"

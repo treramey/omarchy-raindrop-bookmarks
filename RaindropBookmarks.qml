@@ -25,6 +25,7 @@ Item {
   property bool checkingToken: false
   property bool savingToken: false
   property bool tokenValidated: false
+  property bool validatingSubmission: false
   property bool showToken: false
   property string onboardingPhase: "entry"
   property string onboardingError: ""
@@ -39,6 +40,7 @@ Item {
   property string coverDirectory: cacheHome + "/omarchy-shell/raindrop-bookmarks/covers"
   property string coverSyncPath: pluginDirectory + "/cover-sync"
   property string configureTokenPath: pluginDirectory + "/configure-token"
+  property string validateTokenPath: pluginDirectory + "/validate-token"
   property var coverLookup: ({})
 
   property color background: Color.menu.background
@@ -54,6 +56,7 @@ Item {
   property int rowHeight: Math.max(Style.space(54), Style.font.body + Style.font.caption + Style.spacing.rowPaddingX * 2)
 
   function open(payloadJson) {
+    showToken = false
     opened = true
     filterText = ""
     selectedIndex = 0
@@ -67,7 +70,8 @@ Item {
     if (tokenCheck.running) return
     checkingToken = true
     tokenCheck.command = ["bash", "-c",
-      "[[ -r \"$1\" ]] && [[ -n \"$(tr -d '\\r\\n' < \"$1\")\" ]]",
+      "[[ -f \"$1\" && -r \"$1\" ]] && size=$(stat -Lc %s -- \"$1\") "
+        + "&& [[ \"$size\" =~ ^[0-9]+$ ]] && (( size > 0 && size <= 8192 ))",
       "raindrop-token-check", tokenPath]
     tokenCheck.running = true
   }
@@ -93,23 +97,17 @@ Item {
     onboardingPhase = "checking"
     pendingToken = token
     savingToken = true
-    tokenWriter.command = [configureTokenPath, tokenPath]
-    tokenWriter.running = true
+    validatingSubmission = true
+    tokenValidator.command = [validateTokenPath]
+    tokenValidator.running = true
   }
 
   function validateToken() {
     if (tokenValidator.running) return
     onboardingError = ""
     onboardingPhase = "checking"
-    tokenValidator.command = ["bash", "-c",
-      "token=$(tr -d '\\r\\n' < \"$1\"); "
-        + "header=$(mktemp); chmod 600 \"$header\"; trap 'rm -f \"$header\"' EXIT; "
-        + "printf 'Authorization: Bearer %s\\n' \"$token\" > \"$header\"; unset token; "
-        + "curl -q --fail --silent --show-error --proto '=https' --proto-redir '=https' "
-        + "--max-redirs 0 --noproxy '*' --connect-timeout 5 --max-time 15 "
-        + "--max-filesize 1048576 --header \"@$header\" --output /dev/null --url \"$2\"",
-      "raindrop-token-validate", tokenPath,
-      "https://api.raindrop.io/rest/v1/user"]
+    validatingSubmission = false
+    tokenValidator.command = [validateTokenPath, "--file", tokenPath]
     tokenValidator.running = true
   }
 
@@ -130,6 +128,7 @@ Item {
   }
 
   function close() {
+    showToken = false
     opened = false
   }
 
@@ -264,25 +263,38 @@ Item {
     onExited: function(exitCode, exitStatus) {
       root.savingToken = false
       if (exitCode === 0) {
+        root.validatingSubmission = false
+        root.tokenValidated = true
+        root.onboardingPhase = "success"
+        tokenField.text = ""
         root.onboardingError = ""
-        root.validateToken()
+        connectionSuccess.restart()
       } else if (!root.onboardingError) {
-        root.onboardingPhase = "entry"
         root.onboardingError = "Could not save the Raindrop token"
       }
+      if (exitCode !== 0) root.onboardingPhase = "entry"
     }
   }
 
   Process {
     id: tokenValidator
+    stdinEnabled: true
     stderr: StdioCollector { id: tokenValidationError; waitForEnd: true }
+    onStarted: if (root.validatingSubmission) write(root.pendingToken + "\n")
     onExited: function(exitCode, exitStatus) {
       if (exitCode === 0) {
-        root.tokenValidated = true
-        root.onboardingPhase = "success"
-        tokenField.text = ""
-        connectionSuccess.restart()
+        if (root.validatingSubmission) {
+          tokenWriter.command = [root.configureTokenPath, root.tokenPath]
+          tokenWriter.running = true
+        } else {
+          root.tokenValidated = true
+          root.onboardingPhase = "success"
+          tokenField.text = ""
+          connectionSuccess.restart()
+        }
       } else {
+        root.savingToken = false
+        root.pendingToken = ""
         var detail = tokenValidationError.text.trim()
         if (/\b(401|403)\b/.test(detail)) {
           root.showTokenError("Raindrop didn't accept this token. Check that you copied the complete test token, then try again.")
