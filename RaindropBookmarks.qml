@@ -16,8 +16,6 @@ Item {
   property var bookmarks: []
   property var results: []
   property int selectedIndex: 0
-  property int page: 0
-  property var pendingBookmarks: []
   property double lastFetchMs: 0
   readonly property int refreshIntervalMs: 5 * 60 * 1000
   property string errorMessage: ""
@@ -30,14 +28,32 @@ Item {
   property string onboardingPhase: "entry"
   property string onboardingError: ""
   property string pendingToken: ""
+  property bool snapshotLoaded: false
+  property bool snapshotLoading: false
+  property string snapshotResponse: ""
+  property string snapshotErrorMessage: ""
+  property bool snapshotHandled: false
+  property string syncResponse: ""
+  property bool syncHandled: false
+  property bool backgroundTokenValidation: false
+  property string syncStatusMessage: ""
+  property double syncRetryAfterMs: 0
+  property double rateLimitResetMs: 0
+  property bool syncAfterCurrent: false
+  property bool tokenSavedPendingSnapshot: false
+  property bool coverSyncForcePending: false
   readonly property string pluginId: "io.github.treramey.raindrop-bookmarks"
   property string configHome: Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")
+  property string dataHome: Quickshell.env("XDG_DATA_HOME") || (Quickshell.env("HOME") + "/.local/share")
   property string cacheHome: Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache")
   property string tokenPath: Quickshell.env("RAINDROP_TOKEN_FILE") || (configHome + "/raindrop/token")
   property string pluginDirectory: manifest && manifest.__sourceDir
     ? String(manifest.__sourceDir)
     : configHome + "/omarchy/plugins/" + pluginId
   property string coverDirectory: cacheHome + "/omarchy-shell/raindrop-bookmarks/covers"
+  property string snapshotPath: dataHome + "/omarchy-shell/raindrop-bookmarks/bookmarks.json"
+  property string bookmarkSyncPath: pluginDirectory + "/bookmark-sync"
+  property string loadBookmarksPath: pluginDirectory + "/load-bookmarks"
   property string coverSyncPath: pluginDirectory + "/cover-sync"
   property string configureTokenPath: pluginDirectory + "/configure-token"
   property string validateTokenPath: pluginDirectory + "/validate-token"
@@ -59,10 +75,64 @@ Item {
     showToken = false
     opened = true
     filterText = ""
-    selectedIndex = 0
+    selectedIndex = -1
     errorMessage = ""
+    syncStatusMessage = "Loading saved bookmarks…"
     onboardingError = ""
     onboardingPhase = "entry"
+    tokenValidated = false
+    backgroundTokenValidation = false
+    snapshotLoaded = false
+    bookmarks = []
+    results = []
+    lastFetchMs = 0
+    loadSnapshot()
+  }
+
+  function loadSnapshot() {
+    if (snapshotLoader.running) return
+    snapshotLoading = true
+    snapshotHandled = false
+    snapshotResponse = ""
+    snapshotErrorMessage = ""
+    snapshotLoader.command = [loadBookmarksPath, tokenPath, snapshotPath]
+    snapshotLoader.running = true
+  }
+
+  function applyLoadedSnapshot() {
+    if (snapshotHandled) return
+    snapshotHandled = true
+    snapshotLoading = false
+    var loaded = false
+    try {
+      var snapshot = JSON.parse(snapshotResponse)
+      if (snapshot && snapshot.version === 1 && Array.isArray(snapshot.bookmarks)) {
+        bookmarks = snapshot.bookmarks
+        lastFetchMs = Number(snapshot.syncedAt) * 1000
+        loaded = isFinite(lastFetchMs) && lastFetchMs > 0
+      }
+    } catch (error) {
+      loaded = false
+    }
+    snapshotLoaded = loaded
+    if (!loaded) {
+      if (!tokenSavedPendingSnapshot) tokenValidated = false
+      tokenSavedPendingSnapshot = false
+      bookmarks = []
+      results = []
+      selectedIndex = -1
+      lastFetchMs = 0
+      syncStatusMessage = snapshotErrorMessage
+        ? "Saved bookmarks are unavailable or incompatible. Downloading again."
+        : "No saved bookmarks yet"
+    } else {
+      tokenSavedPendingSnapshot = false
+      needsToken = false
+      errorMessage = ""
+      syncStatusMessage = lastSyncLabel()
+      filter(true)
+      syncCovers(coverSyncForcePending)
+    }
     checkToken()
   }
 
@@ -78,11 +148,11 @@ Item {
 
   function continueOpen() {
     needsToken = false
-    syncCovers()
-    if (!fetch.running && (!bookmarks.length || Date.now() - lastFetchMs >= refreshIntervalMs)) {
-      filter()
-      startFetch()
-    } else filter()
+    filter()
+    syncCovers(false)
+    if (!bookmarkSync.running && (!snapshotLoaded || Date.now() - lastFetchMs >= refreshIntervalMs)) {
+      startBookmarkSync(false)
+    }
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -98,6 +168,7 @@ Item {
     pendingToken = token
     savingToken = true
     validatingSubmission = true
+    backgroundTokenValidation = false
     tokenValidator.command = [validateTokenPath]
     tokenValidator.running = true
   }
@@ -111,6 +182,15 @@ Item {
     tokenValidator.running = true
   }
 
+  function validateTokenInBackground() {
+    if (tokenValidator.running) return
+    onboardingError = ""
+    backgroundTokenValidation = true
+    validatingSubmission = false
+    tokenValidator.command = [validateTokenPath, "--file", tokenPath]
+    tokenValidator.running = true
+  }
+
   function showTokenError(message) {
     tokenValidated = false
     needsToken = true
@@ -119,12 +199,34 @@ Item {
     Qt.callLater(function() { tokenField.forceActiveFocus() })
   }
 
-  function handleFetchError(message) {
-    if (/\b(401|403)\b/.test(message)) {
-      showTokenError("Raindrop didn't accept this token. Check that you copied the complete test token, then try again.")
-    } else if (message) {
-      errorMessage = "Could not reach Raindrop. Check your connection and try again."
-    }
+  function reconnect() {
+    needsToken = true
+    onboardingPhase = "entry"
+    onboardingError = ""
+    Qt.callLater(function() { tokenField.forceActiveFocus() })
+  }
+
+  function lastSyncLabel() {
+    if (!lastFetchMs) return "No saved bookmarks yet"
+    return "Saved " + new Date(lastFetchMs).toLocaleString()
+  }
+
+  function refreshBookmarks() {
+    startBookmarkSync(true)
+  }
+
+  function resumeAfterTokenSaved() {
+    syncAfterCurrent = bookmarkSync.running
+    syncRetryAfterMs = 0
+    rateLimitResetMs = 0
+    tokenSavedPendingSnapshot = true
+    snapshotLoaded = false
+    bookmarks = []
+    results = []
+    selectedIndex = -1
+    lastFetchMs = 0
+    syncStatusMessage = "Loading bookmarks…"
+    loadSnapshot()
   }
 
   function close() {
@@ -134,9 +236,30 @@ Item {
 
   function toggle() { opened ? close() : open("{}") }
 
-  function filter() {
+  function filter(preserveSelection) {
+    var previousId = ""
+    var previousIndex = selectedIndex
+    if (preserveSelection && selectedIndex >= 0 && selectedIndex < results.length) {
+      var previousBookmark = results[selectedIndex]
+      if (previousBookmark && previousBookmark._id !== undefined && previousBookmark._id !== null)
+        previousId = String(previousBookmark._id)
+    }
     results = FuzzySearch.search(filterText, bookmarks)
-    selectedIndex = results.length ? 0 : -1
+    if (!results.length) {
+      selectedIndex = -1
+      return
+    }
+    if (previousId) {
+      selectedIndex = -1
+      for (var i = 0; i < results.length; i++) {
+        var bookmark = results[i]
+        if (bookmark && bookmark._id !== undefined && String(bookmark._id) === previousId) {
+          selectedIndex = i
+          break
+        }
+      }
+      if (selectedIndex < 0) selectedIndex = Math.min(Math.max(previousIndex, 0), results.length - 1)
+    } else selectedIndex = 0
   }
 
   function select(delta) {
@@ -156,10 +279,70 @@ Item {
     close()
   }
 
-  function syncCovers() {
-    if (coverSync.running) return
-    coverSync.command = [coverSyncPath, tokenPath, coverDirectory]
+  function syncCovers(force) {
+    if (!snapshotLoaded) return
+    if (coverSync.running) {
+      if (force) coverSyncForcePending = true
+      return
+    }
+    coverSyncForcePending = false
+    coverSync.command = [coverSyncPath, tokenPath, coverDirectory, snapshotPath]
+    if (force) coverSync.command.push("--force")
     coverSync.running = true
+  }
+
+  function startBookmarkSync(manual) {
+    if (bookmarkSync.running) return
+    var now = Date.now()
+    if (now < rateLimitResetMs) {
+      syncStatusMessage = "Refresh paused until the Raindrop rate limit resets"
+      return
+    }
+    if (!manual && now < syncRetryAfterMs) {
+      syncStatusMessage = "Refresh paused after a recent failure"
+      return
+    }
+    syncHandled = false
+    syncResponse = ""
+    syncStatusMessage = manual
+      ? "Refreshing bookmarks…"
+      : (snapshotLoaded ? "Refreshing bookmarks in the background…" : "Loading bookmarks…")
+    bookmarkSync.command = [bookmarkSyncPath, tokenPath, snapshotPath]
+    if (manual) bookmarkSync.command.push("--manual")
+    bookmarkSync.running = true
+  }
+
+  function handleBookmarkSyncResult(text) {
+    if (syncHandled) return
+    syncHandled = true
+    var line = String(text).trim().split(/\r?\n/).filter(function(entry) { return entry }).pop() || ""
+    var parts = line.split("\t")
+    var kind = parts[0] || ""
+    var timestamp = Number(parts[1] || 0) * 1000
+    if (kind === "SYNC_SUCCESS") {
+      syncRetryAfterMs = 0
+      rateLimitResetMs = 0
+      errorMessage = ""
+      if (timestamp > 0) lastFetchMs = timestamp
+      syncStatusMessage = lastSyncLabel()
+      coverSyncForcePending = true
+      loadSnapshot()
+    } else if (kind === "SYNC_BLOCKED") {
+      rateLimitResetMs = timestamp
+      syncStatusMessage = "Refresh paused until the Raindrop rate limit resets"
+    } else if (kind === "SYNC_COOLDOWN") {
+      syncRetryAfterMs = timestamp
+      syncStatusMessage = "Refresh paused after a recent failure"
+    } else {
+      var resetMs = timestamp
+      syncRetryAfterMs = Math.max(Date.now() + 60 * 1000, resetMs)
+      if (resetMs > Date.now()) rateLimitResetMs = resetMs
+      var syncErrorMessage = parts.slice(2).join("\t") || "Could not refresh bookmarks"
+      syncStatusMessage = snapshotLoaded
+        ? lastSyncLabel() + " · Refresh failed"
+        : "Could not load bookmarks. Try again when you are online."
+      errorMessage = snapshotLoaded ? "Could not refresh bookmarks" : syncErrorMessage
+    }
   }
 
   function handleCoverIndex(text) {
@@ -187,52 +370,38 @@ Item {
     return coverLookup[String(bookmark._id)] || ""
   }
 
-  function startFetch() {
-    page = 0
-    pendingBookmarks = []
-    errorMessage = ""
-    fetchPage()
-  }
-
-  function fetchPage() {
-    fetch.command = ["bash", "-c",
-      "[[ -r \"$1\" ]] || { printf 'Raindrop token not found: %s\\n' \"$1\" >&2; exit 1; }; "
-        + "token=$(tr -d '\\r\\n' < \"$1\"); [[ -n \"$token\" ]] || { echo 'Raindrop token is empty' >&2; exit 1; }; "
-        + "header=$(mktemp); chmod 600 \"$header\"; trap 'rm -f \"$header\"' EXIT; "
-        + "printf 'Authorization: Bearer %s\\n' \"$token\" > \"$header\"; unset token; "
-        + "curl -q --fail --silent --show-error --proto '=https' --proto-redir '=https' "
-        + "--max-redirs 0 --noproxy '*' --connect-timeout 5 --max-time 15 "
-        + "--max-filesize 10485760 --header \"@$header\" --url \"$2\"",
-      "raindrop-fetch", tokenPath,
-      "https://api.raindrop.io/rest/v1/raindrops/0?perpage=50&page=" + page]
-    fetch.running = true
-  }
-
-  function handleResponse(text) {
-    try {
-      var response = JSON.parse(text)
-      if (!response || !Array.isArray(response.items)) throw new Error("invalid items")
-      var items = response.items
-      pendingBookmarks = pendingBookmarks.concat(items)
-      if (items.length === 50) { page++; fetchPage() }
-      else {
-        bookmarks = pendingBookmarks
-        lastFetchMs = Date.now()
-        errorMessage = ""
-        filter()
-      }
-    } catch (error) { errorMessage = "Could not read the Raindrop response" }
+  Process {
+    id: snapshotLoader
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.snapshotResponse = this.text }
+    stderr: StdioCollector { waitForEnd: true; onStreamFinished: root.snapshotErrorMessage = this.text.trim() }
+    onExited: Qt.callLater(function() { root.applyLoadedSnapshot() })
   }
 
   Process {
-    id: fetch
-    stdout: StdioCollector { onStreamFinished: root.handleResponse(this.text) }
-    stderr: StdioCollector { onStreamFinished: root.handleFetchError(this.text.trim()) }
+    id: bookmarkSync
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.syncResponse = this.text
+        root.handleBookmarkSyncResult(this.text)
+      }
+    }
+    onExited: Qt.callLater(function() {
+      if (!root.syncHandled) root.handleBookmarkSyncResult(root.syncResponse)
+      if (root.syncAfterCurrent && root.tokenValidated) {
+        root.syncAfterCurrent = false
+        root.startBookmarkSync(false)
+      }
+    })
   }
 
   Process {
     id: coverSync
     stdout: StdioCollector { onStreamFinished: root.handleCoverIndex(this.text) }
+    onExited: if (root.coverSyncForcePending) {
+      root.coverSyncForcePending = false
+      root.syncCovers(true)
+    }
   }
 
   Process {
@@ -241,11 +410,20 @@ Item {
       root.checkingToken = false
       if (exitCode === 0) {
         if (root.tokenValidated) root.continueOpen()
-        else root.validateToken()
+        else if (root.snapshotLoaded) {
+          root.needsToken = false
+          root.startBookmarkSync(false)
+          root.validateTokenInBackground()
+        } else root.validateToken()
       }
       else {
-        root.needsToken = true
-        Qt.callLater(function() { tokenField.forceActiveFocus() })
+        if (root.snapshotLoaded) {
+          root.needsToken = false
+          root.syncStatusMessage = "Saved bookmarks are available offline. Reconnect to refresh."
+        } else {
+          root.needsToken = true
+          Qt.callLater(function() { tokenField.forceActiveFocus() })
+        }
       }
     }
   }
@@ -286,6 +464,10 @@ Item {
         if (root.validatingSubmission) {
           tokenWriter.command = [root.configureTokenPath, root.tokenPath]
           tokenWriter.running = true
+        } else if (root.backgroundTokenValidation) {
+          root.backgroundTokenValidation = false
+          root.tokenValidated = true
+          root.continueOpen()
         } else {
           root.tokenValidated = true
           root.onboardingPhase = "success"
@@ -296,7 +478,13 @@ Item {
         root.savingToken = false
         root.pendingToken = ""
         var detail = tokenValidationError.text.trim()
-        if (/\b(401|403)\b/.test(detail)) {
+        if (root.backgroundTokenValidation) {
+          root.backgroundTokenValidation = false
+          root.tokenValidated = false
+          root.needsToken = false
+          root.errorMessage = ""
+          root.syncStatusMessage = "Saved bookmarks are available offline. Reconnect to refresh."
+        } else if (/\b(401|403)\b/.test(detail)) {
           root.showTokenError("Raindrop didn't accept this token. Check that you copied the complete test token, then try again.")
         } else {
           root.showTokenError("Could not reach Raindrop. Check your connection and try again.")
@@ -309,7 +497,7 @@ Item {
     id: connectionSuccess
     interval: 650
     repeat: false
-    onTriggered: root.continueOpen()
+    onTriggered: root.resumeAfterTokenSaved()
   }
 
   PanelWindow {
@@ -380,11 +568,50 @@ Item {
           color: "transparent"
           Text {
             anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-            text: root.filterText || (root.bookmarks.length ? "Search " + root.bookmarks.length + " bookmarks…" : "Loading bookmarks…")
+            text: root.filterText || (root.snapshotLoaded
+              ? "Search " + root.bookmarks.length + " bookmarks…"
+              : "Loading bookmarks…")
             textFormat: Text.PlainText
             color: root.foreground; opacity: root.filterText ? 1 : 0.58
             font.family: root.fontFamily; font.pixelSize: Style.font.title
             elide: Text.ElideRight
+          }
+        }
+
+        Row {
+          visible: root.snapshotLoaded || root.tokenValidated || root.syncStatusMessage !== ""
+          width: parent.width
+          height: Math.max(Style.space(32), Style.font.caption + Style.spacing.controlPaddingY * 2)
+          spacing: Style.spacing.sm
+
+          Text {
+            width: parent.width - refreshButton.width - reconnectButton.width - parent.spacing * 2
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.syncStatusMessage || root.lastSyncLabel()
+            textFormat: Text.PlainText
+            color: root.foreground
+            opacity: 0.62
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+
+          Button {
+            id: refreshButton
+            text: root.bookmarkSync.running ? "Refreshing…" : "Refresh"
+            bordered: true
+            enabled: !root.bookmarkSync.running && (root.snapshotLoaded || root.tokenValidated)
+            foreground: root.foreground
+            onClicked: root.refreshBookmarks()
+          }
+
+          Button {
+            id: reconnectButton
+            visible: root.snapshotLoaded && !root.tokenValidated
+            text: "Reconnect"
+            bordered: true
+            foreground: root.foreground
+            onClicked: root.reconnect()
           }
         }
 

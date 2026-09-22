@@ -1,8 +1,9 @@
 # Raindrop Bookmarks for Omarchy
 
 A keyboard-first Omarchy Quattro overlay for searching your
-[Raindrop.io](https://raindrop.io/) bookmarks. It caches small cover thumbnails
-and uses a letter tile when a bookmark has no usable cover.
+[Raindrop.io](https://raindrop.io/) bookmarks. It keeps the last successful
+bookmark download for offline search, caches small cover thumbnails, and uses a
+letter tile when a bookmark has no usable cover.
 
 ![Raindrop Bookmarks overlay showing saved bookmarks](assets/raindrop-bookmarks.png)
 
@@ -64,6 +65,8 @@ hyprctl reload
 - Press `Enter` to open the selected bookmark.
 - Press `Escape` to clear the query, then press it again to close the overlay.
 - Click outside the card to close it.
+- Use `Refresh` to request a manual bookmark refresh.
+- Use `Reconnect` when the saved token is no longer valid.
 
 ## Data and security
 
@@ -71,6 +74,10 @@ Omarchy plugins run unsandboxed with your user permissions. This plugin:
 
 - reads only the configured Raindrop token file;
 - sends that token only to `https://api.raindrop.io`;
+- stores the last complete bookmark response under
+  `${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-shell/raindrop-bookmarks`;
+- binds saved bookmarks to a local SHA-256 fingerprint of the token without
+  storing the token in the snapshot;
 - downloads only HTTPS cover URLs on port 443 whose DNS answers are all public;
 - pins each cover request to its validated address, disables redirects and
   proxies, and enforces strict connection, transfer-time, and 5 MiB limits;
@@ -82,18 +89,27 @@ Omarchy plugins run unsandboxed with your user permissions. This plugin:
 
 The plugin never copies the token into its directory or exposes it in a process
 argument. It refreshes cover thumbnails after seven days and removes inactive
-thumbnails after 30 days. It refreshes bookmark data when you open the overlay
-after five minutes.
+thumbnails after 30 days. It refreshes bookmark data in the background when you
+open the overlay after five minutes. A failed refresh keeps the last successful
+snapshot.
+
+To clear the saved bookmark snapshot and cover cache without removing your
+token, run `clear-bookmarks` from the installed plugin directory:
+
+```sh
+"${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/io.github.treramey.raindrop-bookmarks/clear-bookmarks"
+```
 
 ## Remove
 
 ```sh
+"${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/io.github.treramey.raindrop-bookmarks/clear-bookmarks"
 omarchy plugin remove io.github.treramey.raindrop-bookmarks
-rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-shell/raindrop-bookmarks"
 ```
 
-The removal command leaves `~/.config/raindrop/token` in place because other
-Raindrop tools might use it. Remove that file yourself if you no longer need it.
+The clear command removes the saved snapshot and cover cache. The removal
+command leaves `~/.config/raindrop/token` in place because other Raindrop tools
+might use it. Remove that file yourself if you no longer need it.
 
 ## Development
 
@@ -109,9 +125,10 @@ Or run the checks directly:
 ```sh
 omarchy plugin validate .
 qmllint -I "$OMARCHY_PATH/shell" RaindropBookmarks.qml
-bash -n configure-token validate-token cover-sync tests/configure-token.sh tests/validate-token.sh tests/security.sh
+bash -n configure-token validate-token token-fingerprint load-bookmarks bookmark-sync clear-bookmarks cover-sync tests/configure-token.sh tests/validate-token.sh tests/bookmark-sync.sh tests/security.sh
 tests/configure-token.sh
 tests/validate-token.sh
+tests/bookmark-sync.sh
 tests/security.sh
 ```
 

@@ -1,0 +1,221 @@
+#!/bin/bash
+set -u
+
+umask 077
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+token_path=${1:-}
+snapshot_path=${2:-}
+manual=false
+if [[ ${3:-} == --manual ]]; then
+  manual=true
+fi
+
+per_page=50
+max_pages=200
+max_bookmarks=10000
+max_page_bytes=$((10 * 1024 * 1024))
+max_total_api_bytes=$((200 * 1024 * 1024))
+max_snapshot_bytes=$((50 * 1024 * 1024))
+failure_cooldown_seconds=60
+api_url="https://api.raindrop.io/rest/v1/raindrops/0"
+
+fail_sync() {
+  local message=$1
+  local rate_limit_reset=${2:-0}
+  local failure_until=$((now + failure_cooldown_seconds))
+  write_sync_state "$token_fingerprint" "$failure_until" "$rate_limit_reset" || true
+  printf 'SYNC_FAILURE\t%s\t%s\n' "$rate_limit_reset" "$message"
+  exit 1
+}
+
+write_sync_state() {
+  local fingerprint=$1
+  local failure_until=$2
+  local rate_limit_reset=$3
+  local temporary_state
+  temporary_state=$(mktemp "$state_path.tmp.XXXXXX") || return 1
+  if ! jq -n \
+      --arg fingerprint "$fingerprint" \
+      --argjson failure_until "$failure_until" \
+      --argjson rate_limit_reset "$rate_limit_reset" \
+      '{version: 1, tokenFingerprint: $fingerprint,
+        failureCooldownUntil: $failure_until,
+        rateLimitReset: $rate_limit_reset}' > "$temporary_state"; then
+    rm -f -- "$temporary_state"
+    return 1
+  fi
+  if ! chmod 600 -- "$temporary_state" || ! mv -f -- "$temporary_state" "$state_path"; then
+    rm -f -- "$temporary_state"
+    return 1
+  fi
+}
+
+read_rate_limit_reset() {
+  local headers=$1
+  local now_value=$2
+  local header_value
+  local parsed
+
+  header_value=$(awk -F: '
+    tolower($1) == "x-ratelimit-reset" { value = $2 }
+    END { gsub(/\r/, "", value); sub(/^[ \t]+/, "", value); print value }
+  ' "$headers")
+  if [[ "$header_value" =~ ^[0-9]+$ ]] && (( header_value > now_value )); then
+    printf '%s\n' "$header_value"
+    return 0
+  fi
+
+  header_value=$(awk -F: '
+    tolower($1) == "retry-after" { value = $2 }
+    END { gsub(/\r/, "", value); sub(/^[ \t]+/, "", value); print value }
+  ' "$headers")
+  if [[ "$header_value" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$((now_value + header_value))"
+    return 0
+  fi
+  if [[ -n "$header_value" ]]; then
+    parsed=$(date -d "$header_value" +%s 2>/dev/null || true)
+    if [[ "$parsed" =~ ^[0-9]+$ ]] && (( parsed > now_value )); then
+      printf '%s\n' "$parsed"
+      return 0
+    fi
+  fi
+  printf '0\n'
+}
+
+if [[ $# -lt 2 || $# -gt 3 || -z "$token_path" || -z "$snapshot_path" ]]; then
+  printf 'SYNC_FAILURE\t0\tbookmark sync: expected token path, snapshot path, and optional --manual\n'
+  exit 1
+fi
+if [[ $# == 3 && "$manual" != true ]]; then
+  printf 'SYNC_FAILURE\t0\tbookmark sync: invalid arguments\n'
+  exit 1
+fi
+[[ "$snapshot_path" == /* ]] || {
+  printf 'SYNC_FAILURE\t0\tbookmark sync: snapshot path must be absolute\n'
+  exit 1
+}
+[[ -x "$script_dir/token-fingerprint" ]] || {
+  printf 'SYNC_FAILURE\t0\tbookmark sync: token fingerprint helper is missing\n'
+  exit 1
+}
+
+data_dir=$(dirname -- "$snapshot_path")
+if [[ -e "$data_dir" || -L "$data_dir" ]]; then
+  [[ -d "$data_dir" && ! -L "$data_dir" ]] || {
+    printf 'SYNC_FAILURE\t0\tbookmark sync: snapshot directory is not a directory\n'
+    exit 1
+  }
+else
+  install -d -m 700 -- "$data_dir" || {
+    printf 'SYNC_FAILURE\t0\tbookmark sync: could not create snapshot directory\n'
+    exit 1
+  }
+fi
+chmod 700 -- "$data_dir" || {
+  printf 'SYNC_FAILURE\t0\tbookmark sync: could not protect snapshot directory\n'
+  exit 1
+}
+
+state_path="$data_dir/sync-state.json"
+token_fingerprint=$("$script_dir/token-fingerprint" "$token_path" 2>/dev/null) || {
+  printf 'SYNC_FAILURE\t0\tbookmark sync: token is unavailable\n'
+  exit 1
+}
+now=$(date +%s)
+failure_until=0
+rate_limit_reset=0
+if [[ -f "$state_path" && ! -L "$state_path" ]]; then
+  state_size=$(stat -Lc %s -- "$state_path" 2>/dev/null || echo 0)
+  if [[ "$state_size" =~ ^[0-9]+$ ]] && (( state_size <= 4096 )); then
+    state_fingerprint=$(jq -r '.tokenFingerprint // ""' "$state_path" 2>/dev/null || true)
+    if [[ "$state_fingerprint" == "$token_fingerprint" ]]; then
+      failure_until=$(jq -r '.failureCooldownUntil // 0' "$state_path" 2>/dev/null || echo 0)
+      rate_limit_reset=$(jq -r '.rateLimitReset // 0' "$state_path" 2>/dev/null || echo 0)
+    fi
+  fi
+fi
+[[ "$failure_until" =~ ^[0-9]+$ ]] || failure_until=0
+[[ "$rate_limit_reset" =~ ^[0-9]+$ ]] || rate_limit_reset=0
+if (( rate_limit_reset > now )); then
+  printf 'SYNC_BLOCKED\t%s\tRate limit reset is pending\n' "$rate_limit_reset"
+  exit 75
+fi
+if [[ "$manual" != true ]] && (( failure_until > now )); then
+  printf 'SYNC_COOLDOWN\t%s\tRetrying after the previous sync failure\n' "$failure_until"
+  exit 75
+fi
+
+temporary_dir=$(mktemp -d "$data_dir/.sync-XXXXXX") || {
+  printf 'SYNC_FAILURE\t0\tbookmark sync: could not create temporary directory\n'
+  exit 1
+}
+cleanup() {
+  rm -rf -- "$temporary_dir"
+}
+trap cleanup EXIT
+records="$temporary_dir/bookmarks.ndjson"
+response="$temporary_dir/response.json"
+headers="$temporary_dir/headers"
+auth_header="$temporary_dir/authorization"
+printf 'Authorization: Bearer %s\n' "$(tr -d '\r\n' < "$token_path")" > "$auth_header"
+chmod 600 -- "$auth_header"
+
+page=0
+pages_fetched=0
+total_bookmarks=0
+total_api_bytes=0
+while :; do
+  if ! curl -q --fail --silent --show-error \
+      --proto '=https' --proto-redir '=https' --max-redirs 0 --noproxy '*' \
+      --connect-timeout 5 --max-time 20 --max-filesize "$max_page_bytes" \
+      --dump-header "$headers" --header "@$auth_header" --output "$response" \
+      --url "$api_url?perpage=$per_page&page=$page"; then
+    rate_limit_reset=$(read_rate_limit_reset "$headers" "$now")
+    fail_sync "could not fetch page $page" "$rate_limit_reset"
+  fi
+
+  page_bytes=$(stat -c %s "$response" 2>/dev/null || echo 0)
+  [[ "$page_bytes" =~ ^[0-9]+$ ]] || fail_sync "could not measure page $page"
+  (( total_api_bytes += page_bytes ))
+  (( total_api_bytes <= max_total_api_bytes )) \
+    || fail_sync "API response limit exceeded"
+  jq -e 'type == "object" and (.items | type == "array")
+    and all(.items[]; type == "object")' "$response" >/dev/null 2>&1 \
+    || fail_sync "invalid API response on page $page"
+  count=$(jq -r '.items | length' "$response") || fail_sync "invalid item count on page $page"
+  [[ "$count" =~ ^[0-9]+$ ]] || fail_sync "invalid item count on page $page"
+  (( count <= per_page )) || fail_sync "API returned too many items on page $page"
+  (( total_bookmarks += count ))
+  (( total_bookmarks <= max_bookmarks )) || fail_sync "bookmark limit exceeded"
+  jq -c '.items[]' "$response" >> "$records" || fail_sync "could not read page $page"
+
+  ((pages_fetched++))
+  if (( count < per_page )); then
+    break
+  fi
+  (( pages_fetched < max_pages )) || fail_sync "pagination limit exceeded"
+  ((page++))
+done
+
+temporary_snapshot=$(mktemp "$data_dir/.bookmarks.json.XXXXXX") || \
+  fail_sync "could not create temporary snapshot"
+synced_at=$(date +%s)
+if ! jq -s --arg token_fingerprint "$token_fingerprint" --argjson synced_at "$synced_at" \
+    '{version: 1, tokenFingerprint: $token_fingerprint,
+      syncedAt: $synced_at, bookmarks: .}' "$records" > "$temporary_snapshot"; then
+  rm -f -- "$temporary_snapshot"
+  fail_sync "could not write snapshot"
+fi
+snapshot_size=$(stat -c %s "$temporary_snapshot" 2>/dev/null || echo 0)
+if [[ ! "$snapshot_size" =~ ^[0-9]+$ ]] || (( snapshot_size > max_snapshot_bytes )); then
+  rm -f -- "$temporary_snapshot"
+  fail_sync "snapshot limit exceeded"
+fi
+chmod 600 -- "$temporary_snapshot"
+if ! mv -f -- "$temporary_snapshot" "$snapshot_path"; then
+  rm -f -- "$temporary_snapshot"
+  fail_sync "could not publish snapshot"
+fi
+write_sync_state "$token_fingerprint" 0 0 || true
+printf 'SYNC_SUCCESS\t%s\t%s\n' "$synced_at" "$token_fingerprint"

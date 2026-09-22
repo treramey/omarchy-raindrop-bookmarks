@@ -5,17 +5,17 @@ umask 077
 plugin_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 token_path=${1:-${RAINDROP_TOKEN_FILE:-$HOME/.config/raindrop/token}}
 cover_dir=${2:-${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-shell/raindrop-bookmarks/covers}
+snapshot_path=${3:-${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-shell/raindrop-bookmarks/bookmarks.json}
+force=false
+if [[ ${4:-} == --force ]]; then
+  force=true
+fi
 stamp="$cover_dir/.last-sync"
-next_page_file="$cover_dir/.next-page"
 url_guard="$plugin_dir/validate-cover-url"
 magick_policy_dir="$plugin_dir/imagemagick"
-api_url="https://api.raindrop.io/rest/v1/raindrops/0"
 refresh_seconds=300
-per_page=50
-max_pages=20
 parallel_downloads=4
 max_new_covers_per_sync=100
-max_api_bytes=$((10 * 1024 * 1024))
 max_cover_bytes=$((5 * 1024 * 1024))
 max_image_width=8192
 max_image_height=8192
@@ -41,15 +41,20 @@ for command in curl jq file magick python3 timeout; do
   command -v "$command" >/dev/null 2>&1 || fail "missing dependency: $command"
 done
 [[ -x "$url_guard" ]] || fail "URL guard is missing or not executable"
+[[ -x "$plugin_dir/token-fingerprint" ]] || fail "token fingerprint helper is missing"
 [[ -r "$magick_policy_dir/policy.xml" ]] || fail "ImageMagick policy is missing"
 
-[[ -r "$token_path" ]] || fail "token not found: $token_path"
-token=$(tr -d '\r\n' < "$token_path")
-[[ -n "$token" ]] || fail "token is empty: $token_path"
+token_fingerprint=$("$plugin_dir/token-fingerprint" "$token_path" 2>/dev/null) \
+  || fail "token is unavailable: $token_path"
+[[ -f "$snapshot_path" && ! -L "$snapshot_path" && -r "$snapshot_path" ]] \
+  || fail "bookmark snapshot is unavailable: $snapshot_path"
+snapshot_size=$(stat -Lc %s -- "$snapshot_path" 2>/dev/null || echo 0)
+[[ "$snapshot_size" =~ ^[0-9]+$ ]] || fail "could not read bookmark snapshot"
+(( snapshot_size <= 50 * 1024 * 1024 )) || fail "bookmark snapshot is too large"
 
 mkdir -p "$cover_dir"
 
-if [[ -f "$stamp" ]]; then
+if [[ "$force" != true && -f "$stamp" ]]; then
   now=$(date +%s)
   modified=$(stat -c %Y "$stamp" 2>/dev/null || echo 0)
   if (( now - modified < refresh_seconds )); then
@@ -59,50 +64,26 @@ if [[ -f "$stamp" ]]; then
 fi
 
 records=$(mktemp)
-auth_header=$(mktemp)
-trap 'rm -f "$records" "$auth_header"' EXIT
-printf 'Authorization: Bearer %s\n' "$token" > "$auth_header"
-unset token
-
-page=0
-if [[ -f "$next_page_file" && ! -L "$next_page_file" ]]; then
-  read -r page < "$next_page_file" || page=0
+if ! jq -e --arg token_fingerprint "$token_fingerprint" '
+    type == "object"
+    and .version == 1
+    and .tokenFingerprint == $token_fingerprint
+    and (.bookmarks | type == "array" and all(.[]; type == "object"))
+  ' "$snapshot_path" >/dev/null 2>&1; then
+  rm -f -- "$records"
+  fail "bookmark snapshot is missing, corrupt, or for another token"
 fi
-[[ "$page" =~ ^[0-9]+$ ]] || page=0
-pages_fetched=0
-reached_end=false
-while :; do
-  response=$(curl -q --fail --silent --show-error \
-    --proto '=https' --proto-redir '=https' --max-redirs 0 --noproxy '*' \
-    --connect-timeout 5 --max-time 20 --max-filesize "$max_api_bytes" \
-    --header "@$auth_header" \
-    --url "$api_url?perpage=$per_page&page=$page") \
-    || fail "could not fetch page $page"
+jq -r '.bookmarks[] | [
+    (._id | tostring),
+    (if (.cover // "") != "" then .cover
+     elif ((.media // []) | length) > 0 then (.media[0].link // "")
+     else "" end)
+  ] | @tsv' "$snapshot_path" > "$records" || {
+  rm -f -- "$records"
+  fail "could not read cover metadata"
+}
 
-  count=$(jq '.items | length' <<<"$response") || fail "invalid API response"
-  [[ "$count" =~ ^[0-9]+$ ]] || fail "invalid item count"
-  (( count <= per_page )) || fail "API returned too many items"
-  jq -r '.items[] | [
-      (._id | tostring),
-      (if (.cover // "") != "" then .cover
-       elif ((.media // []) | length) > 0 then (.media[0].link // "")
-       else "" end)
-    ] | @tsv' <<<"$response" >> "$records" || fail "could not read cover metadata"
-
-  ((pages_fetched++))
-  if (( count < per_page )); then
-    reached_end=true
-    break
-  fi
-  ((page++))
-  (( pages_fetched >= max_pages )) && break
-done
-
-if [[ "$reached_end" == true ]]; then
-  printf '0\n' > "$next_page_file"
-else
-  printf '%s\n' "$page" > "$next_page_file"
-fi
+trap 'rm -f "$records"' EXIT
 
 run_magick() {
   timeout --kill-after=2 12 \

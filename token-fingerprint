@@ -1,0 +1,27 @@
+#!/bin/bash
+set -euo pipefail
+
+umask 077
+max_token_bytes=8192
+
+fail() {
+  echo "token fingerprint: $1" >&2
+  exit 1
+}
+
+[[ $# == 1 ]] || fail "expected one token path"
+token_path=$1
+[[ -f "$token_path" && -r "$token_path" ]] \
+  || fail "token file is not readable"
+
+token_size=$(stat -Lc %s -- "$token_path" 2>/dev/null) \
+  || fail "could not read token file"
+[[ "$token_size" =~ ^[0-9]+$ ]] || fail "could not read token file"
+(( token_size > 0 && token_size <= max_token_bytes )) \
+  || fail "token file has an invalid size"
+
+token=$(tr -d '\r\n' < "$token_path") || fail "could not read token file"
+[[ -n "$token" && ${#token} -le max_token_bytes ]] \
+  || fail "token has an invalid size"
+
+printf '%s' "$token" | sha256sum | cut -d' ' -f1

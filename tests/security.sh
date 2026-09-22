@@ -62,14 +62,21 @@ fi
 
 fake_bin="$temporary_dir/bin"
 fake_cache="$temporary_dir/cache"
-mkdir -p "$fake_bin" "$fake_cache"
+snapshot_dir="$temporary_dir/snapshot"
+snapshot_path="$snapshot_dir/bookmarks.json"
+mkdir -p "$fake_bin" "$fake_cache" "$snapshot_dir"
 printf '%s\n' 'test-token' > "$temporary_dir/token"
-cat > "$temporary_dir/api.json" <<'JSON'
-{"items":[
-  {"_id":1,"cover":"https://127.0.0.1/private.png"},
-  {"_id":2,"cover":"https://1.1.1.1/public.png"}
-]}
-JSON
+token_fingerprint=$("$repo_dir/token-fingerprint" "$temporary_dir/token")
+jq -n --arg token_fingerprint "$token_fingerprint" '{
+  version: 1,
+  tokenFingerprint: $token_fingerprint,
+  syncedAt: 1,
+  bookmarks: [
+    {_id: 1, cover: "https://127.0.0.1/private.png"},
+    {_id: 2, cover: "https://1.1.1.1/public.png"}
+  ]
+}' > "$snapshot_path"
+chmod 600 "$snapshot_path"
 
 cat > "$fake_bin/curl" <<'CURL'
 #!/bin/bash
@@ -112,15 +119,8 @@ require_pair --noproxy '*'
 
 case "$url" in
   https://api.raindrop.io/*)
-    require_pair --max-filesize 10485760
-    if [[ -n ${PAGINATION_MODE:-} ]]; then
-      python3 - <<'PY'
-import json
-print(json.dumps({"items": [{"_id": index, "cover": ""} for index in range(50)]}))
-PY
-    else
-      cat "$API_FIXTURE"
-    fi
+    : > "$API_MARKER"
+    exit 91
     ;;
   https://1.1.1.1/public.png)
     require_pair --resolve '1.1.1.1:443:1.1.1.1'
@@ -141,56 +141,37 @@ CURL
 chmod +x "$fake_bin/curl"
 
 PATH="$fake_bin:$PATH" \
-  API_FIXTURE="$temporary_dir/api.json" \
   IMAGE_FIXTURE="$temporary_dir/allowed.png" \
   CURL_LOG="$temporary_dir/curl.log" \
   SSRF_MARKER="$temporary_dir/ssrf-attempted" \
-  "$repo_dir/cover-sync" "$temporary_dir/token" "$fake_cache" \
+  API_MARKER="$temporary_dir/api-requested" \
+  "$repo_dir/cover-sync" "$temporary_dir/token" "$fake_cache" "$snapshot_path" --force \
   > "$temporary_dir/index.tsv"
 
 [[ ! -e "$temporary_dir/ssrf-attempted" ]]
+[[ ! -e "$temporary_dir/api-requested" ]]
 [[ ! -e "$fake_cache/1.png" ]]
 [[ -s "$fake_cache/2.png" ]]
-[[ $(wc -l < "$temporary_dir/curl.log") -eq 2 ]]
+[[ $(wc -l < "$temporary_dir/curl.log") -eq 1 ]]
 
 magick -size 16x16 xc:red "$temporary_dir/changed.png"
-cat > "$temporary_dir/api.json" <<'JSON'
-{"items":[{"_id":2,"cover":"https://1.1.1.1/changed.png"}]}
-JSON
-rm -f "$fake_cache/.last-sync"
+jq -n --arg token_fingerprint "$token_fingerprint" '{
+  version: 1,
+  tokenFingerprint: $token_fingerprint,
+  syncedAt: 2,
+  bookmarks: [{_id: 2, cover: "https://1.1.1.1/changed.png"}]
+}' > "$snapshot_path"
 PATH="$fake_bin:$PATH" \
-  API_FIXTURE="$temporary_dir/api.json" \
   IMAGE_FIXTURE="$temporary_dir/allowed.png" \
   CHANGED_IMAGE_FIXTURE="$temporary_dir/changed.png" \
   CURL_LOG="$temporary_dir/curl.log" \
   SSRF_MARKER="$temporary_dir/ssrf-attempted" \
-  "$repo_dir/cover-sync" "$temporary_dir/token" "$fake_cache" \
+  API_MARKER="$temporary_dir/api-requested" \
+  "$repo_dir/cover-sync" "$temporary_dir/token" "$fake_cache" "$snapshot_path" --force \
   > "$temporary_dir/index-changed.tsv"
 compare -metric AE "$fake_cache/2.png" "$temporary_dir/changed.png" null: \
   >/dev/null 2>&1
 
-pagination_cache="$temporary_dir/pagination-cache"
-pagination_log="$temporary_dir/pagination.log"
-PATH="$fake_bin:$PATH" \
-  PAGINATION_MODE=1 \
-  API_FIXTURE="$temporary_dir/api.json" \
-  IMAGE_FIXTURE="$temporary_dir/allowed.png" \
-  CHANGED_IMAGE_FIXTURE="$temporary_dir/changed.png" \
-  CURL_LOG="$pagination_log" \
-  SSRF_MARKER="$temporary_dir/ssrf-attempted" \
-  "$repo_dir/cover-sync" "$temporary_dir/token" "$pagination_cache" >/dev/null
-[[ $(< "$pagination_cache/.next-page") == 20 ]]
-rm -f "$pagination_cache/.last-sync"
-PATH="$fake_bin:$PATH" \
-  PAGINATION_MODE=1 \
-  API_FIXTURE="$temporary_dir/api.json" \
-  IMAGE_FIXTURE="$temporary_dir/allowed.png" \
-  CHANGED_IMAGE_FIXTURE="$temporary_dir/changed.png" \
-  CURL_LOG="$pagination_log" \
-  SSRF_MARKER="$temporary_dir/ssrf-attempted" \
-  "$repo_dir/cover-sync" "$temporary_dir/token" "$pagination_cache" >/dev/null
-[[ $(< "$pagination_cache/.next-page") == 40 ]]
-grep -q 'page=0' "$pagination_log"
-grep -q 'page=20' "$pagination_log"
+! grep -q 'https://api.raindrop.io/' "$temporary_dir/curl.log"
 
 printf 'security checks passed: %d unsafe URLs rejected\n' "${#rejects[@]}"

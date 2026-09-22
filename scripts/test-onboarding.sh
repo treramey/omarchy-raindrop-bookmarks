@@ -48,11 +48,12 @@ trap restore EXIT INT TERM
 echo "Running checks…"
 (
   cd -- "$repo_dir"
-  bash -n configure-token validate-token cover-sync tests/configure-token.sh tests/validate-token.sh tests/security.sh
+  bash -n configure-token validate-token token-fingerprint load-bookmarks bookmark-sync clear-bookmarks cover-sync tests/configure-token.sh tests/validate-token.sh tests/bookmark-sync.sh tests/security.sh
   python3 -m py_compile validate-cover-url
   qmllint -I "$OMARCHY_PATH/shell" RaindropBookmarks.qml
   tests/configure-token.sh
   tests/validate-token.sh
+  tests/bookmark-sync.sh
   tests/security.sh
   omarchy plugin validate .
 )
