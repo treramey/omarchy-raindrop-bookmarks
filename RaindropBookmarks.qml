@@ -148,7 +148,7 @@ Item {
 
   function continueOpen() {
     needsToken = false
-    filter()
+    filter(true)
     syncCovers(false)
     if (!bookmarkSync.running && (!snapshotLoaded || Date.now() - lastFetchMs >= refreshIntervalMs)) {
       startBookmarkSync(false)
@@ -412,7 +412,7 @@ Item {
         if (root.tokenValidated) root.continueOpen()
         else if (root.snapshotLoaded) {
           root.needsToken = false
-          root.startBookmarkSync(false)
+          if (Date.now() - root.lastFetchMs >= root.refreshIntervalMs) root.startBookmarkSync(false)
           root.validateTokenInBackground()
         } else root.validateToken()
       }
@@ -598,9 +598,9 @@ Item {
 
           Button {
             id: refreshButton
-            text: root.bookmarkSync.running ? "Refreshing…" : "Refresh"
+            text: bookmarkSync.running ? "Refreshing…" : "Refresh"
             bordered: true
-            enabled: !root.bookmarkSync.running && (root.snapshotLoaded || root.tokenValidated)
+            enabled: !bookmarkSync.running && (root.snapshotLoaded || root.tokenValidated)
             foreground: root.foreground
             onClicked: root.refreshBookmarks()
           }
