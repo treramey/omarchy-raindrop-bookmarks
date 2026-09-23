@@ -570,11 +570,11 @@ Item {
       Column {
         visible: !root.needsToken
         anchors.fill: parent
-        anchors.topMargin: card.contentTopInset
-        anchors.rightMargin: card.contentRightInset
-        anchors.bottomMargin: card.contentBottomInset
-        anchors.leftMargin: card.contentLeftInset
-        spacing: Style.spacing.sm
+        anchors.topMargin: Math.max(card.contentTopInset, Style.space(20))
+        anchors.rightMargin: Math.max(card.contentRightInset, Style.space(20))
+        anchors.bottomMargin: Math.max(card.contentBottomInset, Style.space(20))
+        anchors.leftMargin: Math.max(card.contentLeftInset, Style.space(20))
+        spacing: Math.max(Style.spacing.md, Style.space(8))
 
         Item {
           width: parent.width
@@ -657,7 +657,10 @@ Item {
           }
           Text {
             anchors.fill: parent
-            anchors.margins: Style.spacing.sm
+            anchors.leftMargin: Math.max(Style.spacing.rowPaddingX, Style.space(12))
+            anchors.rightMargin: Math.max(Style.spacing.rowPaddingX, Style.space(12))
+            anchors.topMargin: Style.spacing.sm
+            anchors.bottomMargin: Style.spacing.sm
             verticalAlignment: Text.AlignVCenter
             text: root.filterText || "Type to search bookmarks…"
             textFormat: Text.PlainText
@@ -680,7 +683,7 @@ Item {
         ListView {
           id: list
           width: parent.width
-          height: Math.max(0, Math.floor((parent.height - y - keyboardHints.implicitHeight - Style.spacing.sm + spacing) / (root.rowHeight + spacing)) * (root.rowHeight + spacing) - spacing)
+          height: Math.max(0, Math.floor((parent.height - y - keyboardHints.implicitHeight - parent.spacing + spacing) / (root.rowHeight + spacing)) * (root.rowHeight + spacing) - spacing)
           model: root.results
           clip: true
           spacing: Style.spacing.xs
@@ -709,7 +712,7 @@ Item {
 
             Rectangle {
               id: icon
-              anchors.left: parent.left; anchors.leftMargin: Style.spacing.rowPaddingX; anchors.verticalCenter: parent.verticalCenter
+              anchors.left: parent.left; anchors.leftMargin: Math.max(Style.spacing.rowPaddingX, Style.space(12)); anchors.verticalCenter: parent.verticalCenter
               width: Style.space(30); height: width
               radius: Math.min(root.cornerRadius, width / 2)
               color: Util.alpha(root.foreground, 0.08)
@@ -735,7 +738,7 @@ Item {
               }
             }
             Column {
-              anchors.left: icon.right; anchors.leftMargin: Style.spacing.md; anchors.right: parent.right
+              anchors.left: icon.right; anchors.leftMargin: Math.max(Style.spacing.md, Style.space(10)); anchors.right: parent.right
               anchors.rightMargin: Style.space(44); anchors.verticalCenter: parent.verticalCenter
               spacing: Style.spacing.xs
               Text { width: parent.width; text: modelData.title || modelData.link; textFormat: Text.PlainText; color: index === root.selectedIndex ? root.selectedText : root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; elide: Text.ElideRight }
