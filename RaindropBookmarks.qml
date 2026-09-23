@@ -208,7 +208,7 @@ Item {
 
   function lastSyncLabel() {
     if (!lastFetchMs) return "No saved bookmarks yet"
-    return "Saved " + new Date(lastFetchMs).toLocaleString()
+    return "Saved " + Qt.formatDateTime(new Date(lastFetchMs), "MMM d, HH:mm")
   }
 
   function refreshBookmarks() {
@@ -561,6 +561,68 @@ Item {
         anchors.leftMargin: card.contentLeftInset
         spacing: Style.spacing.sm
 
+        Item {
+          width: parent.width
+          height: Math.max(Style.space(54), heading.implicitHeight)
+
+          Column {
+            id: heading
+            anchors.left: parent.left
+            anchors.right: headerActions.left
+            anchors.rightMargin: Style.spacing.md
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.spacing.xs
+
+            Text {
+              width: parent.width
+              text: "RAINDROP"
+              textFormat: Text.PlainText
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.weight: Font.Bold
+            }
+            Text {
+              width: parent.width
+              text: root.snapshotLoaded ? root.bookmarks.length + " BOOKMARKS" : "BOOKMARKS"
+              textFormat: Text.PlainText
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.weight: Font.DemiBold
+              font.letterSpacing: 1
+            }
+          }
+
+          Row {
+            id: headerActions
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.spacing.sm
+
+            Button {
+              text: "Reconnect"
+              visible: root.snapshotLoaded && !root.tokenValidated
+              bordered: true
+              foreground: root.foreground
+              onClicked: root.reconnect()
+            }
+            Button {
+              text: bookmarkSync.running ? "Refreshing…" : "Refresh"
+              bordered: true
+              enabled: !bookmarkSync.running && (root.snapshotLoaded || root.tokenValidated)
+              foreground: root.foreground
+              onClicked: root.refreshBookmarks()
+            }
+          }
+        }
+
+        Rectangle {
+          width: parent.width
+          height: 1
+          color: Util.alpha(root.foreground, 0.14)
+        }
+
         Rectangle {
           width: parent.width
           height: Math.max(Style.space(42), Style.font.title + Style.spacing.controlPaddingY * 2)
@@ -578,41 +640,22 @@ Item {
           }
         }
 
-        Row {
+        Text {
           visible: root.snapshotLoaded || root.tokenValidated || root.syncStatusMessage !== ""
           width: parent.width
-          height: Math.max(Style.space(32), Style.font.caption + Style.spacing.controlPaddingY * 2)
-          spacing: Style.spacing.sm
+          text: root.syncStatusMessage || root.lastSyncLabel()
+          textFormat: Text.PlainText
+          color: root.foreground
+          opacity: 0.62
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
 
-          Text {
-            width: parent.width - refreshButton.width - reconnectButton.width - parent.spacing * 2
-            anchors.verticalCenter: parent.verticalCenter
-            text: root.syncStatusMessage || root.lastSyncLabel()
-            textFormat: Text.PlainText
-            color: root.foreground
-            opacity: 0.62
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
-          }
-
-          Button {
-            id: refreshButton
-            text: bookmarkSync.running ? "Refreshing…" : "Refresh"
-            bordered: true
-            enabled: !bookmarkSync.running && (root.snapshotLoaded || root.tokenValidated)
-            foreground: root.foreground
-            onClicked: root.refreshBookmarks()
-          }
-
-          Button {
-            id: reconnectButton
-            visible: root.snapshotLoaded && !root.tokenValidated
-            text: "Reconnect"
-            bordered: true
-            foreground: root.foreground
-            onClicked: root.reconnect()
-          }
+        Rectangle {
+          width: parent.width
+          height: 1
+          color: Util.alpha(root.foreground, 0.14)
         }
 
         Text {
