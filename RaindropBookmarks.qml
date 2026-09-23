@@ -69,7 +69,8 @@ Item {
   property string fontFamily: Style.font.menuFamily
   property int cardWidth: Math.min(Style.space(needsToken ? 580 : 760), panel.width - Style.gapsOut * 2)
   property int cardHeight: Math.min(Style.space(needsToken ? 430 : 520), panel.height - Style.gapsOut * 2)
-  property int rowHeight: Math.max(Style.space(54), Style.font.body + Style.font.caption + Style.spacing.rowPaddingX * 2)
+  property int rowHeight: Math.max(Style.space(44), Style.font.body + Style.font.caption + Style.spacing.xs + Style.spacing.sm * 2)
+  property double statusNowMs: Date.now()
 
   function open(payloadJson) {
     showToken = false
@@ -208,7 +209,11 @@ Item {
 
   function lastSyncLabel() {
     if (!lastFetchMs) return "No saved bookmarks yet"
-    return "Saved " + Qt.formatDateTime(new Date(lastFetchMs), "MMM d, HH:mm")
+    var minutes = Math.max(0, Math.floor((statusNowMs - lastFetchMs) / 60000))
+    if (minutes < 1) return "Synced just now"
+    if (minutes < 60) return "Synced " + minutes + "m ago"
+    if (minutes < 1440) return "Synced " + Math.floor(minutes / 60) + "h ago"
+    return "Synced " + Math.floor(minutes / 1440) + "d ago"
   }
 
   function refreshBookmarks() {
@@ -339,7 +344,7 @@ Item {
       if (resetMs > Date.now()) rateLimitResetMs = resetMs
       var syncErrorMessage = parts.slice(2).join("\t") || "Could not refresh bookmarks"
       syncStatusMessage = snapshotLoaded
-        ? lastSyncLabel() + " · Refresh failed"
+        ? "Refresh failed · using saved bookmarks"
         : "Could not load bookmarks. Try again when you are online."
       errorMessage = snapshotLoaded ? "Could not refresh bookmarks" : syncErrorMessage
     }
@@ -419,7 +424,7 @@ Item {
       else {
         if (root.snapshotLoaded) {
           root.needsToken = false
-          root.syncStatusMessage = "Saved bookmarks are available offline. Reconnect to refresh."
+          root.syncStatusMessage = "Reconnect to refresh · using saved bookmarks"
         } else {
           root.needsToken = true
           Qt.callLater(function() { tokenField.forceActiveFocus() })
@@ -483,7 +488,9 @@ Item {
           root.tokenValidated = false
           root.needsToken = false
           root.errorMessage = ""
-          root.syncStatusMessage = "Saved bookmarks are available offline. Reconnect to refresh."
+          root.syncStatusMessage = /\b(401|403)\b/.test(detail)
+            ? "Reconnect to refresh · using saved bookmarks"
+            : "Raindrop unreachable · using saved bookmarks"
         } else if (/\b(401|403)\b/.test(detail)) {
           root.showTokenError("Raindrop didn't accept this token. Check that you copied the complete test token, then try again.")
         } else {
@@ -491,6 +498,14 @@ Item {
         }
       }
     }
+  }
+
+  Timer {
+    interval: 60000
+    running: root.opened
+    triggeredOnStart: true
+    repeat: true
+    onTriggered: root.statusNowMs = Date.now()
   }
 
   Timer {
@@ -563,34 +578,40 @@ Item {
 
         Item {
           width: parent.width
-          height: Math.max(Style.space(54), heading.implicitHeight)
+          height: Math.max(headerActions.implicitHeight, heading.implicitHeight)
 
-          Column {
+          Text {
             id: heading
             anchors.left: parent.left
-            anchors.right: headerActions.left
-            anchors.rightMargin: Style.spacing.md
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.spacing.xs
+            text: "RAINDROP"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.weight: Font.Bold
+          }
 
-            Text {
-              width: parent.width
-              text: "RAINDROP"
-              textFormat: Text.PlainText
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.title
-              font.weight: Font.Bold
-            }
-            Text {
-              width: parent.width
-              text: root.snapshotLoaded ? root.bookmarks.length + " BOOKMARKS" : "BOOKMARKS"
-              textFormat: Text.PlainText
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              font.weight: Font.DemiBold
-              font.letterSpacing: 1
+          Text {
+            anchors.left: heading.right
+            anchors.leftMargin: Style.spacing.md
+            anchors.right: headerActions.left
+            anchors.rightMargin: Style.spacing.sm
+            anchors.verticalCenter: parent.verticalCenter
+            text: syncTimestampHover.containsMouse && root.lastFetchMs
+              ? "Synced " + Qt.formatDateTime(new Date(root.lastFetchMs), "MMM d, HH:mm")
+              : root.syncStatusMessage.indexOf("Synced ") === 0 || !root.syncStatusMessage
+                ? root.lastSyncLabel() : root.syncStatusMessage
+            textFormat: Text.PlainText
+            color: root.foreground
+            opacity: 0.8
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+            MouseArea {
+              id: syncTimestampHover
+              anchors.fill: parent
+              hoverEnabled: true
+              acceptedButtons: Qt.NoButton
             }
           }
 
@@ -627,45 +648,23 @@ Item {
           width: parent.width
           height: Math.max(Style.space(42), Style.font.title + Style.spacing.controlPaddingY * 2)
           radius: root.cornerRadius
-          color: "transparent"
+          color: Util.alpha(root.foreground, 0.04)
+          border.width: Math.max(1, Style.space(1))
+          border.color: keyCatcher.activeFocus ? root.selectedText : Color.menu.border
+          MouseArea {
+            anchors.fill: parent
+            onClicked: keyCatcher.forceActiveFocus()
+          }
           Text {
-            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-            text: root.filterText || (root.snapshotLoaded
-              ? "Search " + root.bookmarks.length + " bookmarks…"
-              : "Loading bookmarks…")
+            anchors.fill: parent
+            anchors.margins: Style.spacing.sm
+            verticalAlignment: Text.AlignVCenter
+            text: root.filterText || "Type to search bookmarks…"
             textFormat: Text.PlainText
-            color: root.foreground; opacity: root.filterText ? 1 : 0.58
+            color: root.foreground; opacity: root.filterText ? 1 : 0.8
             font.family: root.fontFamily; font.pixelSize: Style.font.title
             elide: Text.ElideRight
           }
-        }
-
-        Text {
-          visible: root.snapshotLoaded || root.tokenValidated || root.syncStatusMessage !== ""
-          width: parent.width
-          text: root.syncStatusMessage || root.lastSyncLabel()
-          textFormat: Text.PlainText
-          color: root.foreground
-          opacity: 0.62
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
-        }
-
-        Rectangle {
-          width: parent.width
-          height: 1
-          color: Util.alpha(root.foreground, 0.14)
-        }
-
-        Text {
-          width: parent.width
-          height: Style.space(28)
-          verticalAlignment: Text.AlignVCenter
-          text: root.filterText ? "RESULTS" : "ALL BOOKMARKS"
-          textFormat: Text.PlainText
-          color: root.foreground; opacity: 0.62
-          font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.weight: Font.DemiBold
         }
 
         Text {
@@ -681,11 +680,23 @@ Item {
         ListView {
           id: list
           width: parent.width
-          height: parent.height - y
+          height: Math.max(0, Math.floor((parent.height - y - keyboardHints.implicitHeight - Style.spacing.sm + spacing) / (root.rowHeight + spacing)) * (root.rowHeight + spacing) - spacing)
           model: root.results
           clip: true
           spacing: Style.spacing.xs
           boundsBehavior: Flickable.StopAtBounds
+          snapMode: ListView.SnapToItem
+
+          Rectangle {
+            parent: list
+            anchors.right: parent.right
+            width: Math.max(2, Style.space(2))
+            height: Math.max(Style.space(12), list.height * list.visibleArea.heightRatio)
+            y: Math.max(0, Math.min(list.height - height, list.height * list.visibleArea.yPosition))
+            visible: list.contentHeight > list.height && list.height > 0
+            color: Util.alpha(root.foreground, 0.4)
+            z: 2
+          }
 
           delegate: Rectangle {
             required property var modelData
@@ -693,6 +704,8 @@ Item {
             width: ListView.view.width; height: root.rowHeight
             radius: root.cornerRadius
             color: index === root.selectedIndex ? root.selectedBackground : mouse.containsMouse ? Util.alpha(root.foreground, 0.04) : "transparent"
+            border.width: index === root.selectedIndex ? Math.max(1, Style.space(1)) : 0
+            border.color: root.selectedText
 
             Rectangle {
               id: icon
@@ -726,7 +739,7 @@ Item {
               anchors.rightMargin: Style.space(44); anchors.verticalCenter: parent.verticalCenter
               spacing: Style.spacing.xs
               Text { width: parent.width; text: modelData.title || modelData.link; textFormat: Text.PlainText; color: index === root.selectedIndex ? root.selectedText : root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; elide: Text.ElideRight }
-              Text { width: parent.width; text: modelData.domain || modelData.link; textFormat: Text.PlainText; color: root.foreground; opacity: 0.58; font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
+              Text { width: parent.width; text: modelData.domain || modelData.link; textFormat: Text.PlainText; color: root.foreground; opacity: 0.8; font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
             }
             Text { anchors.right: parent.right; anchors.rightMargin: Style.spacing.rowPaddingX; anchors.verticalCenter: parent.verticalCenter; visible: index === root.selectedIndex; text: "↵"; textFormat: Text.PlainText; color: root.selectedText; font.family: root.fontFamily; font.pixelSize: Style.font.title }
             MouseArea {
@@ -739,6 +752,18 @@ Item {
               }
             }
           }
+        }
+        Text {
+          id: keyboardHints
+          width: parent.width
+          text: (root.filterText ? root.results.length + " results" : root.bookmarks.length + " bookmarks")
+            + "   ↑↓ Navigate   Enter Open   Esc " + (root.filterText ? "Clear search" : "Close")
+          textFormat: Text.PlainText
+          color: root.foreground
+          opacity: 0.8
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
         }
       }
 
