@@ -683,7 +683,7 @@ Item {
         ListView {
           id: list
           width: parent.width
-          height: Math.max(0, Math.floor((parent.height - y - keyboardHints.implicitHeight - parent.spacing + spacing) / (root.rowHeight + spacing)) * (root.rowHeight + spacing) - spacing)
+          height: Math.max(0, parent.height - y - keyboardHints.implicitHeight - parent.spacing)
           model: root.results
           clip: true
           spacing: Style.spacing.xs
