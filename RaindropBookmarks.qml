@@ -688,7 +688,7 @@ Item {
           clip: true
           spacing: Math.max(Style.spacing.xs, Style.space(4))
           boundsBehavior: Flickable.StopAtBounds
-          snapMode: ListView.SnapToItem
+          snapMode: ListView.NoSnap
 
           Rectangle {
             parent: list
