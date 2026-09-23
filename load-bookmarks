@@ -1,0 +1,36 @@
+#!/bin/bash
+set -euo pipefail
+
+umask 077
+max_snapshot_bytes=$((50 * 1024 * 1024))
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+
+fail() {
+  echo "bookmark snapshot: $1" >&2
+  exit 1
+}
+
+[[ $# == 2 ]] || fail "expected token path and snapshot path"
+token_path=$1
+snapshot_path=$2
+[[ "$snapshot_path" == /* ]] || fail "snapshot path must be absolute"
+[[ -f "$snapshot_path" && ! -L "$snapshot_path" && -r "$snapshot_path" ]] \
+  || fail "snapshot file is not readable"
+
+snapshot_size=$(stat -Lc %s -- "$snapshot_path" 2>/dev/null) \
+  || fail "could not read snapshot file"
+[[ "$snapshot_size" =~ ^[0-9]+$ ]] || fail "could not read snapshot file"
+(( snapshot_size <= max_snapshot_bytes )) || fail "snapshot is too large"
+
+token_fingerprint=$("$script_dir/token-fingerprint" "$token_path") \
+  || fail "could not fingerprint token"
+
+jq -e --arg token_fingerprint "$token_fingerprint" '
+  type == "object"
+  and .version == 1
+  and .tokenFingerprint == $token_fingerprint
+  and (.syncedAt | type == "number" and floor == . and . >= 0)
+  and (.bookmarks | type == "array" and all(.[]; type == "object"))
+' "$snapshot_path" >/dev/null 2>&1 || fail "snapshot is missing, corrupt, or for another token"
+
+jq -c . "$snapshot_path"

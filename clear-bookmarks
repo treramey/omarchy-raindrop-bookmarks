@@ -1,0 +1,18 @@
+#!/bin/bash
+set -euo pipefail
+
+umask 077
+data_home=${XDG_DATA_HOME:-${HOME:?}/.local/share}
+cache_home=${XDG_CACHE_HOME:-${HOME:?}/.cache}
+data_dir="$data_home/omarchy-shell/raindrop-bookmarks"
+cache_dir="$cache_home/omarchy-shell/raindrop-bookmarks"
+
+for path in "$data_dir" "$cache_dir"; do
+  if [[ -L "$path" || ( -e "$path" && ! -d "$path" ) ]]; then
+    echo "clear bookmarks: refusing to remove non-directory path: $path" >&2
+    exit 1
+  fi
+  rm -rf -- "$path"
+done
+
+echo "Cleared local Raindrop bookmarks and cover cache."
