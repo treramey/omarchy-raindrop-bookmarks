@@ -12,10 +12,22 @@ function scoreToken(rawQuery, rawText) {
   var text = caseSensitive ? String(rawText) : String(rawText).toLowerCase()
   if (query.length > text.length) return -1
 
+  // Most fields cannot contain a long query as a subsequence. Reject them
+  // before allocating and scoring a matrix for every query character.
+  var position = 0
+  for (var q = 0; q < query.length; q++) {
+    position = text.indexOf(query[q], position)
+    if (position < 0) return -1
+    position++
+  }
+
+  var boundaries = new Array(text.length)
+  for (var b = 0; b < text.length; b++) boundaries[b] = isBoundary(rawText, b)
+
   var previous = new Array(text.length)
   for (var j = 0; j < text.length; j++) {
     previous[j] = text[j] === query[0]
-      ? 16 + (isBoundary(String(rawText), j) ? 18 : 0) - Math.min(j, 24)
+      ? 16 + (boundaries[j] ? 18 : 0) - Math.min(j, 24)
       : -Infinity
   }
 
@@ -30,7 +42,7 @@ function scoreToken(rawQuery, rawText) {
       else {
         var consecutive = k > 0 && previous[k - 1] !== -Infinity ? previous[k - 1] + 28 : -Infinity
         var gapped = bestGap === -Infinity ? -Infinity : bestGap + 12
-        current[k] = Math.max(consecutive, gapped) + (isBoundary(String(rawText), k) ? 10 : 0)
+        current[k] = Math.max(consecutive, gapped) + (boundaries[k] ? 10 : 0)
       }
     }
     previous = current

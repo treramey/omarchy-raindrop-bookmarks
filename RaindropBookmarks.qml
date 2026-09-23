@@ -237,11 +237,17 @@ Item {
   function close() {
     showToken = false
     opened = false
+    searchDebounce.stop()
   }
 
   function toggle() { opened ? close() : open("{}") }
 
+  function scheduleSearch() {
+    searchDebounce.restart()
+  }
+
   function filter(preserveSelection) {
+    searchDebounce.stop()
     var previousId = ""
     var previousIndex = selectedIndex
     if (preserveSelection && selectedIndex >= 0 && selectedIndex < results.length) {
@@ -501,6 +507,13 @@ Item {
   }
 
   Timer {
+    id: searchDebounce
+    interval: 275
+    repeat: false
+    onTriggered: root.filter()
+  }
+
+  Timer {
     interval: 60000
     running: root.opened
     triggeredOnStart: true
@@ -550,7 +563,7 @@ Item {
           if (event.key === Qt.Key_Escape) {
             if (root.filterText) { root.filterText = ""; root.filter() } else root.close()
           } else if (Util.editsFilter(event, root.filterText)) {
-            root.filterText = Util.editedFilter(event, root.filterText); root.filter()
+            root.filterText = Util.editedFilter(event, root.filterText); root.scheduleSearch()
           } else if (event.key === Qt.Key_Up) root.select(-1)
           else if (event.key === Qt.Key_Down) root.select(1)
           else if (event.key === Qt.Key_PageUp) root.select(-6)
@@ -560,7 +573,7 @@ Item {
                    && event.text.charCodeAt(0) !== 127
                    && (event.modifiers === Qt.NoModifier || event.modifiers === Qt.ShiftModifier)) {
             root.filterText += event.text
-            root.filter()
+            root.scheduleSearch()
           }
           else return
           event.accepted = true
