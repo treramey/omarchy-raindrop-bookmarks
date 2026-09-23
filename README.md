@@ -26,7 +26,7 @@ omarchy plugin add https://github.com/treramey/omarchy-raindrop-bookmarks.git --
 
 Open the overlay and paste your Raindrop test token when prompted. The plugin
 links to the Raindrop integrations menu, verifies the token, and stores it at
-`~/.config/raindrop/token` with private permissions.
+`${XDG_CONFIG_HOME:-$HOME/.config}/raindrop/token` with private permissions.
 
 To open the overlay from a terminal:
 
@@ -72,7 +72,7 @@ hyprctl reload
 
 Omarchy plugins run unsandboxed with your user permissions. This plugin:
 
-- reads only the configured Raindrop token file;
+- reads credentials only from the configured Raindrop token file;
 - sends that token only to `https://api.raindrop.io`;
 - stores the last complete bookmark response under
   `${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-shell/raindrop-bookmarks`;
@@ -84,17 +84,24 @@ Omarchy plugins run unsandboxed with your user permissions. This plugin:
 - accepts only PNG, JPEG, GIF, and WebP covers and processes them under a
   restrictive ImageMagick resource and codec policy;
 - stores generated thumbnails under
-  `~/.cache/omarchy-shell/raindrop-bookmarks/covers`; and
+  `${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-shell/raindrop-bookmarks/covers`; and
 - opens selected links through `xdg-open`.
 
 The plugin never copies the token into its directory or exposes it in a process
-argument. It refreshes cover thumbnails after seven days and removes inactive
-thumbnails after 30 days. It refreshes bookmark data in the background when you
-open the overlay after five minutes. A failed refresh keeps the last successful
-snapshot.
+argument. During cover sync, it attempts to refresh thumbnails at least seven
+days old and deletes thumbnail files with a modification age greater than 30
+days. These checks do not run on a timer. It refreshes bookmark data in the
+background when you open the overlay and the last successful sync is at least
+five minutes old. A failed refresh keeps the last successful snapshot.
 
 To clear the saved bookmark snapshot and cover cache without removing your
 token, run `clear-bookmarks` from the installed plugin directory:
+
+Stop Omarchy Shell before clearing data. Closing the overlay does not stop
+background syncs. The command deletes files, but does not clear bookmarks from
+a running shell's memory or prevent an active sync from recreating the files.
+Start Omarchy Shell again when finished. Opening the plugin can download the
+bookmarks again while the token remains configured.
 
 ```sh
 "${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/io.github.treramey.raindrop-bookmarks/clear-bookmarks"
@@ -108,13 +115,16 @@ omarchy plugin remove io.github.treramey.raindrop-bookmarks
 ```
 
 The clear command removes the saved snapshot and cover cache. The removal
-command leaves `~/.config/raindrop/token` in place because other Raindrop tools
+command leaves the configured token file in place because other Raindrop tools
 might use it. Remove that file yourself if you no longer need it.
 
 ## Development
 
 Test the onboarding flow from the current checkout. The script restores your
 installed plugin and token when you finish:
+
+The script does not back up or restore bookmark snapshots or cover caches.
+Connecting during the test can replace those files with data for the test token.
 
 ```sh
 scripts/test-onboarding.sh
@@ -125,7 +135,10 @@ Or run the checks directly:
 ```sh
 omarchy plugin validate .
 qmllint -I "$OMARCHY_PATH/shell" RaindropBookmarks.qml
-bash -n configure-token validate-token token-fingerprint load-bookmarks bookmark-sync clear-bookmarks cover-sync tests/configure-token.sh tests/validate-token.sh tests/bookmark-sync.sh tests/security.sh
+for script in configure-token validate-token token-fingerprint load-bookmarks bookmark-sync clear-bookmarks cover-sync tests/*.sh; do
+  bash -n "$script" || break
+done
+python3 -m py_compile validate-cover-url
 tests/configure-token.sh
 tests/validate-token.sh
 tests/bookmark-sync.sh
