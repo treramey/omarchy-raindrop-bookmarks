@@ -574,7 +574,7 @@ Item {
         anchors.rightMargin: Math.max(card.contentRightInset, Style.space(20))
         anchors.bottomMargin: Math.max(card.contentBottomInset, Style.space(20))
         anchors.leftMargin: Math.max(card.contentLeftInset, Style.space(20))
-        spacing: Math.max(Style.spacing.md, Style.space(8))
+        spacing: Math.max(Style.spacing.md, Style.space(10))
 
         Item {
           width: parent.width
@@ -593,9 +593,9 @@ Item {
 
           Text {
             anchors.left: heading.right
-            anchors.leftMargin: Style.spacing.md
+            anchors.leftMargin: Math.max(Style.spacing.md, Style.space(16))
             anchors.right: headerActions.left
-            anchors.rightMargin: Style.spacing.sm
+            anchors.rightMargin: Math.max(Style.spacing.md, Style.space(16))
             anchors.verticalCenter: parent.verticalCenter
             text: syncTimestampHover.containsMouse && root.lastFetchMs
               ? "Synced " + Qt.formatDateTime(new Date(root.lastFetchMs), "MMM d, HH:mm")
@@ -686,7 +686,7 @@ Item {
           height: Math.max(0, parent.height - y - keyboardHints.implicitHeight - parent.spacing)
           model: root.results
           clip: true
-          spacing: Style.spacing.xs
+          spacing: Math.max(Style.spacing.xs, Style.space(4))
           boundsBehavior: Flickable.StopAtBounds
           snapMode: ListView.SnapToItem
 
@@ -738,7 +738,7 @@ Item {
               }
             }
             Column {
-              anchors.left: icon.right; anchors.leftMargin: Math.max(Style.spacing.md, Style.space(10)); anchors.right: parent.right
+              anchors.left: icon.right; anchors.leftMargin: Math.max(Style.spacing.md, Style.space(12)); anchors.right: parent.right
               anchors.rightMargin: Style.space(44); anchors.verticalCenter: parent.verticalCenter
               spacing: Style.spacing.xs
               Text { width: parent.width; text: modelData.title || modelData.link; textFormat: Text.PlainText; color: index === root.selectedIndex ? root.selectedText : root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; elide: Text.ElideRight }
@@ -756,17 +756,28 @@ Item {
             }
           }
         }
-        Text {
+        Flow {
           id: keyboardHints
           width: parent.width
-          text: (root.filterText ? root.results.length + " results" : root.bookmarks.length + " bookmarks")
-            + "   ↑↓ Navigate   Enter Open   Esc " + (root.filterText ? "Clear search" : "Close")
-          textFormat: Text.PlainText
-          color: root.foreground
-          opacity: 0.8
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
+          spacing: Math.max(Style.spacing.md, Style.space(24))
+
+          Repeater {
+            model: [
+              root.filterText ? root.results.length + " results" : root.bookmarks.length + " bookmarks",
+              "↑↓ Navigate",
+              "Enter Open",
+              "Esc " + (root.filterText ? "Clear search" : "Close")
+            ]
+            Text {
+              required property string modelData
+              text: modelData
+              textFormat: Text.PlainText
+              color: root.foreground
+              opacity: 0.8
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
         }
       }
 
