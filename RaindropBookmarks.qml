@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "FuzzySearch.js" as FuzzySearch
 
@@ -59,12 +60,12 @@ Item {
   property string validateTokenPath: pluginDirectory + "/validate-token"
   property var coverLookup: ({})
 
-  property color background: Color.menu.background
-  property color foreground: Color.menu.text
-  property color scrim: Color.menu.scrim
-  property color selectedBackground: Color.menu.selectedBackground
-  property color selectedText: Color.menu.selectedText
-  property var borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
+  property color background: Commons.Color.menu.background
+  property color foreground: Commons.Color.menu.text
+  property color scrim: Commons.Color.menu.scrim
+  property color selectedBackground: Commons.Color.menu.selectedBackground
+  property color selectedText: Commons.Color.menu.selectedText
+  property var borderSpec: Border.surfaceSpec("menu", "border", Commons.Color.menu.border, Math.max(1, Style.space(2)))
   readonly property int cornerRadius: Style.cornerRadius
   property string fontFamily: Style.font.menuFamily
   property int cardWidth: Math.min(Style.space(needsToken ? 580 : 760), panel.width - Style.gapsOut * 2)
@@ -663,7 +664,7 @@ Item {
           radius: root.cornerRadius
           color: Util.alpha(root.foreground, 0.04)
           border.width: Math.max(1, Style.space(1))
-          border.color: keyCatcher.activeFocus ? root.selectedText : Color.menu.border
+          border.color: keyCatcher.activeFocus ? root.selectedText : Commons.Color.menu.border
           MouseArea {
             anchors.fill: parent
             onClicked: keyCatcher.forceActiveFocus()
@@ -688,7 +689,7 @@ Item {
           width: parent.width
           text: root.errorMessage
           textFormat: Text.PlainText
-          color: Color.urgent
+          color: Commons.Color.urgent
           wrapMode: Text.Wrap
           font.family: root.fontFamily
         }
@@ -860,7 +861,7 @@ Item {
           width: parent.width
           text: root.onboardingError
           textFormat: Text.PlainText
-          color: Color.urgent
+          color: Commons.Color.urgent
           wrapMode: Text.WordWrap
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
