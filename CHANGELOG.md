@@ -1,5 +1,11 @@
 # io.github.treramey.raindrop-bookmarks
 
+## 1.2.1
+
+### Patch Changes
+
+- c87b438: Qualify the Omarchy color singleton to restore bookmark and onboarding theme colors on updated Qt and Quickshell installations.
+
 ## 1.2.0
 
 ### Minor Changes
