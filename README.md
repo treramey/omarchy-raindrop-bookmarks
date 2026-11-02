@@ -83,6 +83,9 @@ Omarchy plugins run unsandboxed with your user permissions. This plugin:
   proxies, and enforces strict connection, transfer-time, and 5 MiB limits;
 - accepts only PNG, JPEG, GIF, and WebP covers and processes them under a
   restrictive ImageMagick resource and codec policy;
+- caps each ImageMagick process's virtual address space at 256 MiB before
+  identification or conversion, preserves stricter inherited limits, and includes
+  metadata allocations outside ImageMagick's pixel cache in that budget;
 - stores generated thumbnails under
   `${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-shell/raindrop-bookmarks/covers`; and
 - opens selected links through `xdg-open`.
