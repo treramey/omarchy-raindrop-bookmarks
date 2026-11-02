@@ -48,7 +48,8 @@ Once bookmarks have been downloaded, users should not have to wait through anoth
 
 ## Evidence
 
-- `RaindropBookmarks.qml` owns in-memory bookmarks, snapshot loading, token validation, selection preservation, and five-minute freshness.
+- `RaindropBookmarks.qml` owns in-memory bookmarks, snapshot loading, connection UI, selection preservation, and five-minute freshness.
+- `RaindropConnection.qml` owns serialized token checks, their immutable request context, validated credential saves, and connection error recovery.
 - `bookmark-sync` owns full bookmark pagination, snapshot publication, token binding, cooldowns, and rate-limit state.
 - `cover-sync` consumes bookmark metadata from the shared snapshot and stores disposable thumbnails without fetching bookmark pages again.
 - `manifest.json` keeps the overlay loaded so background refreshes can finish, while the snapshot persists data across shell restarts.

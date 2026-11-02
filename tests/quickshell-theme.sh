@@ -12,7 +12,7 @@ mkdir -p "$work_dir/config" "$work_dir/home"
 for module in Commons Ui services; do
   ln -s "$shell_dir/$module" "$work_dir/config/$module"
 done
-cp "$repo_dir/RaindropBookmarks.qml" "$repo_dir/FuzzySearch.js" "$work_dir/config/"
+cp "$repo_dir/RaindropBookmarks.qml" "$repo_dir/BookmarkBrowser.qml" "$repo_dir/RaindropConnection.qml" "$repo_dir/FuzzySearch.js" "$work_dir/config/"
 cp "$repo_dir/tests/quickshell-theme.qml" "$work_dir/config/shell.qml"
 
 if ! HOME="$work_dir/home" XDG_CONFIG_HOME="$work_dir/home/.config" \
@@ -23,7 +23,7 @@ if ! HOME="$work_dir/home" XDG_CONFIG_HOME="$work_dir/home/.config" \
   exit 1
 fi
 cat "$work_dir/output"
-if grep -Eq 'RaindropBookmarks.qml.*(TypeError|Unable to assign)|Raindrop theme mismatch' "$work_dir/output"; then
+if grep -Eq '(RaindropBookmarks|BookmarkBrowser|RaindropConnection).qml.*(TypeError|Unable to assign)|Raindrop theme mismatch' "$work_dir/output"; then
   exit 1
 fi
 grep -q 'Raindrop theme bindings passed' "$work_dir/output"

@@ -22,6 +22,14 @@ printf '%s\n' 'replacement token' | "$repo_dir/configure-token" "$token_path"
 [[ $(< "$token_path") == 'replacement token' ]]
 [[ $(< "$temporary_dir/victim") == 'do not replace' ]]
 
+mkdir "$temporary_dir/directory-target"
+if printf 'token\n' | "$repo_dir/configure-token" "$temporary_dir/directory-target" >/dev/null 2>&1; then
+  echo "configure-token reported success for a directory instead of a token file" >&2
+  exit 1
+fi
+[[ -z $(find "$temporary_dir/directory-target" -mindepth 1 -print -quit) ]]
+[[ -z $(find "$temporary_dir" -maxdepth 1 -name '.token-*' -print -quit) ]]
+
 if printf '\n' | "$repo_dir/configure-token" "$token_path" >/dev/null 2>&1; then
   echo "configure-token accepted an empty token" >&2
   exit 1
@@ -42,5 +50,11 @@ fi
 new_token_path="$temporary_dir/new-config/raindrop/token"
 printf 'new token\n' | "$repo_dir/configure-token" "$new_token_path"
 [[ $(stat -c %a "$temporary_dir/new-config/raindrop") == 700 ]]
+
+if printf '%s\n' "$(printf 'x%.0s' {1..8193})" | "$repo_dir/configure-token" "$new_token_path" >/dev/null 2>&1; then
+  echo "configure-token accepted an oversized token" >&2
+  exit 1
+fi
+[[ $(< "$new_token_path") == 'new token' ]]
 
 echo "token configuration checks passed"
