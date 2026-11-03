@@ -20,6 +20,7 @@ max_cover_bytes=$((5 * 1024 * 1024))
 max_image_width=8192
 max_image_height=8192
 max_image_area=$((32 * 1024 * 1024))
+max_image_memory_kib=$((256 * 1024))
 cover_refresh_seconds=$((7 * 24 * 60 * 60))
 
 emit_index() {
@@ -85,7 +86,21 @@ jq -r '.bookmarks[] | [
 
 trap 'rm -f "$records"' EXIT
 
-run_magick() {
+run_magick() (
+  # Pixel-cache limits do not cover codec metadata allocations. Bound the entire
+  # parser address space before either identify or conversion reads foreign data.
+  local memory_limit_kib=$max_image_memory_kib
+  local inherited_memory_kib
+  inherited_memory_kib=$(ulimit -Sv) || return 1
+  if [[ "$inherited_memory_kib" != unlimited ]]; then
+    [[ "$inherited_memory_kib" =~ ^[0-9]+$ ]] || return 1
+    if (( inherited_memory_kib < memory_limit_kib )); then
+      memory_limit_kib=$inherited_memory_kib
+    fi
+  fi
+  # The soft limit cannot exceed the inherited hard limit. Lower both to this
+  # budget without raising either, and never parse if the limit cannot be applied.
+  ulimit -v "$memory_limit_kib" || return 1
   timeout --kill-after=2 12 \
     env MAGICK_CONFIGURE_PATH="$magick_policy_dir" \
       MAGICK_MEMORY_LIMIT=64MiB \
@@ -94,7 +109,7 @@ run_magick() {
       MAGICK_THREAD_LIMIT=1 \
       MAGICK_TIME_LIMIT=10 \
       magick "$@"
-}
+)
 
 sync_cover() {
   local id=$1

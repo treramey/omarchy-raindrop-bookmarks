@@ -7,6 +7,9 @@ letter tile when a bookmark has no usable cover.
 
 ![Raindrop Bookmarks overlay showing saved bookmarks](assets/raindrop-bookmarks.png)
 
+The search-first layout takes cues from [Raycast's bookmark browser](https://www.raycast.com/raycast/browser-bookmarks).
+Colors, fonts, spacing, borders, and corner rounding follow your Omarchy theme.
+
 ## Requirements
 
 - Omarchy Quattro
@@ -37,6 +40,20 @@ omarchy-shell shell toggle io.github.treramey.raindrop-bookmarks '{}'
 To store the token elsewhere, set `RAINDROP_TOKEN_FILE` before you start
 Omarchy Shell.
 
+### Connection errors
+
+The form distinguishes rejected tokens, invalid input, connection failures,
+Raindrop service errors, and local installation or save failures. A rejected
+replacement never overwrites the saved token. Save failures return you to the
+form so you can retry.
+
+If a background check is still running, the form shows `Finishing check…`.
+Wait for it to finish before submitting the replacement token. Active attempts
+continue if you close the overlay. Reopening does not restart them.
+
+Rate limits show a retry countdown and disable Connect until the wait ends.
+Token checks have a 20-second deadline and saves have a 5-second deadline.
+
 ## Keyboard shortcut
 
 To use `Super + Shift + R`, add this binding to
@@ -63,10 +80,12 @@ hyprctl reload
 - Type to fuzzy-search titles, domains, tags, and URLs.
 - Use `Up`, `Down`, `Page Up`, and `Page Down` to move through results.
 - Press `Enter` to open the selected bookmark.
-- Press `Escape` to clear the query, then press it again to close the overlay.
+- Press `Ctrl+K` or click `Actions` for bookmark and connection actions.
+- Press `Ctrl+R` to refresh bookmarks.
+- Press `Escape` to dismiss actions, clear the query, then close the overlay.
 - Click outside the card to close it.
-- Use `Refresh` to request a manual bookmark refresh.
-- Use `Reconnect` when the saved token is no longer valid.
+- Choose `Refresh bookmarks` in `Actions` to request a manual refresh.
+- Choose `Reconnect Raindrop` in `Actions` when the saved token is no longer valid.
 
 ## Data and security
 
@@ -83,6 +102,9 @@ Omarchy plugins run unsandboxed with your user permissions. This plugin:
   proxies, and enforces strict connection, transfer-time, and 5 MiB limits;
 - accepts only PNG, JPEG, GIF, and WebP covers and processes them under a
   restrictive ImageMagick resource and codec policy;
+- caps each ImageMagick process's virtual address space at 256 MiB before
+  identification or conversion, preserves stricter inherited limits, and includes
+  metadata allocations outside ImageMagick's pixel cache in that budget;
 - stores generated thumbnails under
   `${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-shell/raindrop-bookmarks/covers`; and
 - opens selected links through `xdg-open`.
@@ -134,15 +156,18 @@ Or run the checks directly:
 
 ```sh
 omarchy plugin validate .
-qmllint -I "$OMARCHY_PATH/shell" RaindropBookmarks.qml
-for script in configure-token validate-token token-fingerprint load-bookmarks bookmark-sync clear-bookmarks cover-sync tests/*.sh; do
+qmllint -I "$OMARCHY_PATH/shell" RaindropBookmarks.qml BookmarkBrowser.qml RaindropConnection.qml
+for script in configure-token validate-token token-fingerprint load-bookmarks bookmark-sync clear-bookmarks cover-sync scripts/*.sh tests/*.sh; do
   bash -n "$script" || break
 done
 python3 -m py_compile validate-cover-url
 tests/configure-token.sh
 tests/validate-token.sh
+tests/raindrop-connection.sh
 tests/bookmark-sync.sh
 tests/security.sh
+tests/bookmark-browser.sh
+tests/quickshell-theme.sh
 ```
 
 Runtime changes require a Changesets entry (`pnpm changeset`). The release pull

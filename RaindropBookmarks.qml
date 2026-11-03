@@ -22,13 +22,11 @@ Item {
   property string errorMessage: ""
   property bool needsToken: false
   property bool checkingToken: false
-  property bool savingToken: false
+  readonly property bool savingToken: connection.foregroundBusy
   property bool tokenValidated: false
-  property bool validatingSubmission: false
   property bool showToken: false
-  property string onboardingPhase: "entry"
-  property string onboardingError: ""
-  property string pendingToken: ""
+  readonly property string onboardingPhase: connection.phase
+  readonly property string onboardingError: connection.errorMessage
   property bool snapshotLoaded: false
   property bool snapshotLoading: false
   property string snapshotResponse: ""
@@ -36,7 +34,6 @@ Item {
   property bool snapshotHandled: false
   property string syncResponse: ""
   property bool syncHandled: false
-  property bool backgroundTokenValidation: false
   property string syncStatusMessage: ""
   property double syncRetryAfterMs: 0
   property double rateLimitResetMs: 0
@@ -70,7 +67,6 @@ Item {
   property string fontFamily: Style.font.menuFamily
   property int cardWidth: Math.min(Style.space(needsToken ? 580 : 760), panel.width - Style.gapsOut * 2)
   property int cardHeight: Math.min(Style.space(needsToken ? 430 : 520), panel.height - Style.gapsOut * 2)
-  property int rowHeight: Math.max(Style.space(44), Style.font.body + Style.font.caption + Style.spacing.xs + Style.spacing.sm * 2)
   property double statusNowMs: Date.now()
 
   function open(payloadJson) {
@@ -80,10 +76,9 @@ Item {
     selectedIndex = -1
     errorMessage = ""
     syncStatusMessage = "Loading saved bookmarks…"
-    onboardingError = ""
-    onboardingPhase = "entry"
-    tokenValidated = false
-    backgroundTokenValidation = false
+    connection.prepareOpen()
+    needsToken = connection.foregroundBusy || connection.phase === "success"
+    if (connection.phase !== "success") tokenValidated = false
     snapshotLoaded = false
     bookmarks = []
     results = []
@@ -118,7 +113,7 @@ Item {
     }
     snapshotLoaded = loaded
     if (!loaded) {
-      if (!tokenSavedPendingSnapshot) tokenValidated = false
+      if (!tokenSavedPendingSnapshot && connection.phase !== "success") tokenValidated = false
       tokenSavedPendingSnapshot = false
       bookmarks = []
       results = []
@@ -129,7 +124,6 @@ Item {
         : "No saved bookmarks yet"
     } else {
       tokenSavedPendingSnapshot = false
-      needsToken = false
       errorMessage = ""
       syncStatusMessage = lastSyncLabel()
       filter(true)
@@ -143,7 +137,7 @@ Item {
     checkingToken = true
     tokenCheck.command = ["bash", "-c",
       "[[ -f \"$1\" && -r \"$1\" ]] && size=$(stat -Lc %s -- \"$1\") "
-        + "&& [[ \"$size\" =~ ^[0-9]+$ ]] && (( size > 0 && size <= 8192 ))",
+        + "&& [[ \"$size\" =~ ^[0-9]+$ ]] && (( size > 0 && size <= 8193 ))",
       "raindrop-token-check", tokenPath]
     tokenCheck.running = true
   }
@@ -155,56 +149,27 @@ Item {
     if (!bookmarkSync.running && (!snapshotLoaded || Date.now() - lastFetchMs >= refreshIntervalMs)) {
       startBookmarkSync(false)
     }
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    Qt.callLater(function() { browser.focusSearch() })
   }
 
   function saveToken() {
-    var token = tokenField.text.trim()
-    if (!token) {
-      onboardingError = "Paste your Raindrop test token first"
-      return
-    }
-    if (tokenWriter.running) return
-    onboardingError = ""
-    onboardingPhase = "checking"
-    pendingToken = token
-    savingToken = true
-    validatingSubmission = true
-    backgroundTokenValidation = false
-    tokenValidator.command = [validateTokenPath]
-    tokenValidator.running = true
+    connection.submitToken(tokenField.text)
   }
 
   function validateToken() {
-    if (tokenValidator.running) return
-    onboardingError = ""
-    onboardingPhase = "checking"
-    validatingSubmission = false
-    tokenValidator.command = [validateTokenPath, "--file", tokenPath]
-    tokenValidator.running = true
+    if (connection.busy) return
+    needsToken = true
+    connection.validateStored(false)
   }
 
   function validateTokenInBackground() {
-    if (tokenValidator.running) return
-    onboardingError = ""
-    backgroundTokenValidation = true
-    validatingSubmission = false
-    tokenValidator.command = [validateTokenPath, "--file", tokenPath]
-    tokenValidator.running = true
-  }
-
-  function showTokenError(message) {
-    tokenValidated = false
-    needsToken = true
-    onboardingPhase = "entry"
-    onboardingError = message
-    Qt.callLater(function() { tokenField.forceActiveFocus() })
+    connection.validateStored(true)
   }
 
   function reconnect() {
+    connection.enter()
+    showToken = false
     needsToken = true
-    onboardingPhase = "entry"
-    onboardingError = ""
     Qt.callLater(function() { tokenField.forceActiveFocus() })
   }
 
@@ -222,6 +187,8 @@ Item {
   }
 
   function resumeAfterTokenSaved() {
+    connection.clearSuccess()
+    needsToken = false
     syncAfterCurrent = bookmarkSync.running
     syncRetryAfterMs = 0
     rateLimitResetMs = 0
@@ -277,7 +244,6 @@ Item {
   function select(delta) {
     if (!results.length) return
     selectedIndex = (selectedIndex + delta + results.length) % results.length
-    list.positionViewAtIndex(selectedIndex, ListView.Contain)
   }
 
   function openCurrent() {
@@ -377,11 +343,6 @@ Item {
     }).join("/")
   }
 
-  function coverSource(bookmark) {
-    if (!bookmark || bookmark._id === undefined || bookmark._id === null) return ""
-    return coverLookup[String(bookmark._id)] || ""
-  }
-
   Process {
     id: snapshotLoader
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.snapshotResponse = this.text }
@@ -420,6 +381,7 @@ Item {
     id: tokenCheck
     onExited: function(exitCode, exitStatus) {
       root.checkingToken = false
+      if (root.needsToken || connection.foregroundBusy || connection.phase === "success") return
       if (exitCode === 0) {
         if (root.tokenValidated) root.continueOpen()
         else if (root.snapshotLoaded) {
@@ -440,69 +402,37 @@ Item {
     }
   }
 
-  Process {
-    id: tokenWriter
-    stdinEnabled: true
-    stderr: StdioCollector {
-      onStreamFinished: if (this.text.trim()) root.onboardingError = this.text.trim()
-    }
-    onStarted: {
-      write(root.pendingToken + "\n")
-      root.pendingToken = ""
-    }
-    onExited: function(exitCode, exitStatus) {
-      root.savingToken = false
-      if (exitCode === 0) {
-        root.validatingSubmission = false
-        root.tokenValidated = true
-        root.onboardingPhase = "success"
+  RaindropConnection {
+    id: connection
+    tokenPath: root.tokenPath
+    validateTokenPath: root.validateTokenPath
+    configureTokenPath: root.configureTokenPath
+    presentationActive: root.opened && root.needsToken
+    onRetryAtMsChanged: root.rateLimitResetMs = Math.max(root.rateLimitResetMs, retryAtMs)
+    onBusyChanged: if (!busy && root.opened && root.needsToken && phase === "entry")
+      Qt.callLater(function() { tokenField.forceActiveFocus() })
+    onValidated: function(mode) {
+      root.tokenValidated = true
+      root.errorMessage = ""
+      if (mode === "background") root.continueOpen()
+      else {
         tokenField.text = ""
-        root.onboardingError = ""
+        root.showToken = false
         connectionSuccess.restart()
-      } else if (!root.onboardingError) {
-        root.onboardingError = "Could not save the Raindrop token"
       }
-      if (exitCode !== 0) root.onboardingPhase = "entry"
     }
-  }
-
-  Process {
-    id: tokenValidator
-    stdinEnabled: true
-    stderr: StdioCollector { id: tokenValidationError; waitForEnd: true }
-    onStarted: if (root.validatingSubmission) write(root.pendingToken + "\n")
-    onExited: function(exitCode, exitStatus) {
-      if (exitCode === 0) {
-        if (root.validatingSubmission) {
-          tokenWriter.command = [root.configureTokenPath, root.tokenPath]
-          tokenWriter.running = true
-        } else if (root.backgroundTokenValidation) {
-          root.backgroundTokenValidation = false
-          root.tokenValidated = true
-          root.continueOpen()
-        } else {
-          root.tokenValidated = true
-          root.onboardingPhase = "success"
-          tokenField.text = ""
-          connectionSuccess.restart()
-        }
+    onFailed: function(mode, kind, message) {
+      root.tokenValidated = false
+      if (mode === "background" && root.snapshotLoaded) {
+        root.needsToken = false
+        root.errorMessage = ""
+        root.syncStatusMessage = kind === "auth" || kind === "input" || kind === "local"
+          ? "Reconnect to refresh · using saved bookmarks"
+          : kind === "rate-limit" ? "Raindrop rate limit reached · using saved bookmarks"
+          : "Raindrop unreachable · using saved bookmarks"
       } else {
-        root.savingToken = false
-        root.pendingToken = ""
-        var detail = tokenValidationError.text.trim()
-        if (root.backgroundTokenValidation) {
-          root.backgroundTokenValidation = false
-          root.tokenValidated = false
-          root.needsToken = false
-          root.errorMessage = ""
-          root.syncStatusMessage = /\b(401|403)\b/.test(detail)
-            ? "Reconnect to refresh · using saved bookmarks"
-            : "Raindrop unreachable · using saved bookmarks"
-        } else if (/\b(401|403)\b/.test(detail)) {
-          root.showTokenError("Raindrop didn't accept this token. Check that you copied the complete test token, then try again.")
-        } else {
-          root.showTokenError("Could not reach Raindrop. Check your connection and try again.")
-        }
+        root.needsToken = true
+        if (root.opened) Qt.callLater(function() { tokenField.forceActiveFocus() })
       }
     }
   }
@@ -554,252 +484,66 @@ Item {
 
       MouseArea { anchors.fill: parent; onClicked: {} }
 
-      Item {
-        id: keyCatcher
-        anchors.fill: parent
-        focus: true
-        Keys.enabled: !root.needsToken
-        Keys.priority: Keys.BeforeItem
-        Keys.onPressed: function(event) {
-          if (event.key === Qt.Key_Escape) {
-            if (root.filterText) { root.filterText = ""; root.filter() } else root.close()
-          } else if (Util.editsFilter(event, root.filterText)) {
-            root.filterText = Util.editedFilter(event, root.filterText); root.scheduleSearch()
-          } else if (event.key === Qt.Key_Up) root.select(-1)
-          else if (event.key === Qt.Key_Down) root.select(1)
-          else if (event.key === Qt.Key_PageUp) root.select(-6)
-          else if (event.key === Qt.Key_PageDown) root.select(6)
-          else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.openCurrent()
-          else if (event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32
-                   && event.text.charCodeAt(0) !== 127
-                   && (event.modifiers === Qt.NoModifier || event.modifiers === Qt.ShiftModifier)) {
-            root.filterText += event.text
-            root.scheduleSearch()
-          }
-          else return
-          event.accepted = true
-        }
+      Shortcut {
+        sequence: "Escape"
+        enabled: root.opened && root.needsToken
+        onActivated: root.close()
       }
 
-      Column {
-        visible: !root.needsToken
+      BookmarkBrowser {
+        id: browser
         anchors.fill: parent
-        anchors.topMargin: Math.max(card.contentTopInset, Style.space(20))
-        anchors.rightMargin: Math.max(card.contentRightInset, Style.space(20))
-        anchors.bottomMargin: Math.max(card.contentBottomInset, Style.space(20))
-        anchors.leftMargin: Math.max(card.contentLeftInset, Style.space(20))
-        spacing: Math.max(Style.spacing.md, Style.space(10))
-
-        Item {
-          width: parent.width
-          height: Math.max(headerActions.implicitHeight, heading.implicitHeight)
-
-          Text {
-            id: heading
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            text: "RAINDROP"
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            font.weight: Font.Bold
-          }
-
-          Text {
-            anchors.left: heading.right
-            anchors.leftMargin: Math.max(Style.spacing.md, Style.space(16))
-            anchors.right: headerActions.left
-            anchors.rightMargin: Math.max(Style.spacing.md, Style.space(16))
-            anchors.verticalCenter: parent.verticalCenter
-            text: syncTimestampHover.containsMouse && root.lastFetchMs
-              ? "Synced " + Qt.formatDateTime(new Date(root.lastFetchMs), "MMM d, HH:mm")
-              : root.syncStatusMessage.indexOf("Synced ") === 0 || !root.syncStatusMessage
-                ? root.lastSyncLabel() : root.syncStatusMessage
-            textFormat: Text.PlainText
-            color: root.foreground
-            opacity: 0.8
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
-            MouseArea {
-              id: syncTimestampHover
-              anchors.fill: parent
-              hoverEnabled: true
-              acceptedButtons: Qt.NoButton
-            }
-          }
-
-          Row {
-            id: headerActions
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.spacing.sm
-
-            Button {
-              text: "Reconnect"
-              visible: root.snapshotLoaded && !root.tokenValidated
-              bordered: true
-              foreground: root.foreground
-              onClicked: root.reconnect()
-            }
-            Button {
-              text: bookmarkSync.running ? "Refreshing…" : "Refresh"
-              bordered: true
-              enabled: !bookmarkSync.running && (root.snapshotLoaded || root.tokenValidated)
-              foreground: root.foreground
-              onClicked: root.refreshBookmarks()
-            }
-          }
+        anchors.topMargin: card.borderTop
+        anchors.rightMargin: card.borderRight
+        anchors.bottomMargin: card.borderBottom
+        anchors.leftMargin: card.borderLeft
+        visible: !root.needsToken
+        active: root.opened && !root.needsToken
+        query: root.filterText
+        results: root.results
+        selectedIndex: root.selectedIndex
+        coverLookup: root.coverLookup
+        statusText: root.syncStatusMessage.indexOf("Synced ") === 0 || !root.syncStatusMessage
+          ? root.lastSyncLabel() : root.syncStatusMessage
+        lastSyncMs: root.lastFetchMs
+        errorText: root.errorMessage
+        loading: root.snapshotLoading || (bookmarkSync.running && !root.snapshotLoaded)
+        refreshing: bookmarkSync.running
+        canRefresh: !bookmarkSync.running && (root.snapshotLoaded || root.tokenValidated)
+        reconnectRequired: root.snapshotLoaded && !root.tokenValidated
+        foreground: root.foreground
+        selectedBackground: root.selectedBackground
+        selectedText: root.selectedText
+        fontFamily: root.fontFamily
+        onQueryEdited: function(text) {
+          root.filterText = text
+          if (text) root.scheduleSearch()
+          else root.filter()
         }
-
-        Rectangle {
-          width: parent.width
-          height: 1
-          color: Util.alpha(root.foreground, 0.14)
-        }
-
-        Rectangle {
-          width: parent.width
-          height: Math.max(Style.space(42), Style.font.title + Style.spacing.controlPaddingY * 2)
-          radius: root.cornerRadius
-          color: Util.alpha(root.foreground, 0.04)
-          border.width: Math.max(1, Style.space(1))
-          border.color: keyCatcher.activeFocus ? root.selectedText : Commons.Color.menu.border
-          MouseArea {
-            anchors.fill: parent
-            onClicked: keyCatcher.forceActiveFocus()
-          }
-          Text {
-            anchors.fill: parent
-            anchors.leftMargin: Math.max(Style.spacing.rowPaddingX, Style.space(12))
-            anchors.rightMargin: Math.max(Style.spacing.rowPaddingX, Style.space(12))
-            anchors.topMargin: Style.spacing.sm
-            anchors.bottomMargin: Style.spacing.sm
-            verticalAlignment: Text.AlignVCenter
-            text: root.filterText || "Type to search bookmarks…"
-            textFormat: Text.PlainText
-            color: root.foreground; opacity: root.filterText ? 1 : 0.8
-            font.family: root.fontFamily; font.pixelSize: Style.font.title
-            elide: Text.ElideRight
-          }
-        }
-
-        Text {
-          visible: root.errorMessage !== ""
-          width: parent.width
-          text: root.errorMessage
-          textFormat: Text.PlainText
-          color: Commons.Color.urgent
-          wrapMode: Text.Wrap
-          font.family: root.fontFamily
-        }
-
-        ListView {
-          id: list
-          width: parent.width
-          height: Math.max(0, parent.height - y - keyboardHints.implicitHeight - parent.spacing)
-          model: root.results
-          clip: true
-          spacing: Math.max(Style.spacing.xs, Style.space(4))
-          boundsBehavior: Flickable.StopAtBounds
-          snapMode: ListView.NoSnap
-
-          Rectangle {
-            parent: list
-            anchors.right: parent.right
-            width: Math.max(2, Style.space(2))
-            height: Math.max(Style.space(12), list.height * list.visibleArea.heightRatio)
-            y: Math.max(0, Math.min(list.height - height, list.height * list.visibleArea.yPosition))
-            visible: list.contentHeight > list.height && list.height > 0
-            color: Util.alpha(root.foreground, 0.4)
-            z: 2
-          }
-
-          delegate: Rectangle {
-            required property var modelData
-            required property int index
-            width: ListView.view.width; height: root.rowHeight
-            radius: root.cornerRadius
-            color: index === root.selectedIndex ? root.selectedBackground : mouse.containsMouse ? Util.alpha(root.foreground, 0.04) : "transparent"
-            border.width: index === root.selectedIndex ? Math.max(1, Style.space(1)) : 0
-            border.color: root.selectedText
-
-            Rectangle {
-              id: icon
-              anchors.left: parent.left; anchors.leftMargin: Math.max(Style.spacing.rowPaddingX, Style.space(12)); anchors.verticalCenter: parent.verticalCenter
-              width: Style.space(30); height: width
-              radius: Math.min(root.cornerRadius, width / 2)
-              color: Util.alpha(root.foreground, 0.08)
-              clip: true
-              Text {
-                anchors.centerIn: parent
-                visible: coverImage.status !== Image.Ready
-                text: (modelData.title || modelData.domain || "?").charAt(0).toUpperCase()
-                textFormat: Text.PlainText
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
-                font.weight: Font.DemiBold
-              }
-              Image {
-                id: coverImage
-                anchors.fill: parent
-                source: root.coverSource(modelData)
-                fillMode: Image.PreserveAspectCrop
-                asynchronous: true
-                cache: true
-                visible: status === Image.Ready
-              }
-            }
-            Column {
-              anchors.left: icon.right; anchors.leftMargin: Math.max(Style.spacing.md, Style.space(12)); anchors.right: parent.right
-              anchors.rightMargin: Style.space(44); anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.spacing.xs
-              Text { width: parent.width; text: modelData.title || modelData.link; textFormat: Text.PlainText; color: index === root.selectedIndex ? root.selectedText : root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; elide: Text.ElideRight }
-              Text { width: parent.width; text: modelData.domain || modelData.link; textFormat: Text.PlainText; color: root.foreground; opacity: 0.8; font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
-            }
-            Text { anchors.right: parent.right; anchors.rightMargin: Style.spacing.rowPaddingX; anchors.verticalCenter: parent.verticalCenter; visible: index === root.selectedIndex; text: "↵"; textFormat: Text.PlainText; color: root.selectedText; font.family: root.fontFamily; font.pixelSize: Style.font.title }
-            MouseArea {
-              id: mouse
-              anchors.fill: parent
-              hoverEnabled: true
-              onClicked: {
-                root.selectedIndex = index
-                root.openCurrent()
-              }
-            }
-          }
-        }
-        Flow {
-          id: keyboardHints
-          width: parent.width
-          spacing: Math.max(Style.spacing.md, Style.space(24))
-
-          Repeater {
-            model: [
-              root.filterText ? root.results.length + " results" : root.bookmarks.length + " bookmarks",
-              "↑↓ Navigate",
-              "Enter Open",
-              "Esc " + (root.filterText ? "Clear search" : "Close")
-            ]
-            Text {
-              required property string modelData
-              text: modelData
-              textFormat: Text.PlainText
-              color: root.foreground
-              opacity: 0.8
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-          }
-        }
+        onMoveRequested: function(delta) { root.select(delta) }
+        onSelectionRequested: function(index) { root.selectedIndex = index }
+        onOpenRequested: root.openCurrent()
+        onRefreshRequested: root.refreshBookmarks()
+        onReconnectRequested: root.reconnect()
+        onCloseRequested: root.close()
       }
 
       Column {
         visible: root.needsToken
         width: Math.min(parent.width - card.contentLeftInset - card.contentRightInset, Style.space(500))
         anchors.centerIn: parent
-        spacing: Style.spacing.md
+        spacing: Style.spacing.panelGap
+
+        Text {
+          width: parent.width
+          text: "Raindrop Bookmarks"
+          textFormat: Text.PlainText
+          color: root.foreground
+          opacity: 0.7
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          horizontalAlignment: root.onboardingPhase === "success" ? Text.AlignHCenter : Text.AlignLeft
+        }
 
         Text {
           width: parent.width
@@ -807,7 +551,7 @@ Item {
           textFormat: Text.PlainText
           color: root.foreground
           font.family: root.fontFamily
-          font.pixelSize: Style.font.title
+          font.pixelSize: Style.font.heading
           font.weight: Font.DemiBold
           horizontalAlignment: root.onboardingPhase === "success" ? Text.AlignHCenter : Text.AlignLeft
         }
@@ -831,11 +575,13 @@ Item {
 
           TextField {
             id: tokenField
+            objectName: "raindropTokenInput"
             width: parent.width - revealToken.width - parent.spacing
             password: !root.showToken
             enabled: root.onboardingPhase === "entry" && !root.savingToken
             placeholderText: "Paste token"
             foreground: root.foreground
+            font.family: root.fontFamily
             onAccepted: root.saveToken()
             Keys.onPressed: function(event) {
               if (event.key === Qt.Key_Escape) {
@@ -852,6 +598,7 @@ Item {
             bordered: true
             enabled: root.onboardingPhase === "entry"
             foreground: root.foreground
+            fontFamily: root.fontFamily
             onClicked: root.showToken = !root.showToken
           }
         }
@@ -875,6 +622,7 @@ Item {
           Button {
             text: "Get Raindrop token ↗"
             foreground: root.foreground
+            fontFamily: root.fontFamily
             onClicked: {
               root.close()
               Quickshell.execDetached(["xdg-open", "https://app.raindrop.io/settings/integrations"])
@@ -882,14 +630,28 @@ Item {
           }
 
           Button {
-            text: root.onboardingPhase === "checking" ? "Checking token…" : "Connect Raindrop"
+            text: connection.buttonText
+            objectName: "raindropConnectButton"
             selected: true
             bordered: true
-            enabled: root.onboardingPhase === "entry" && !root.savingToken && tokenField.text.trim() !== ""
-            opacity: root.onboardingPhase === "checking" ? 0.72 : (enabled ? 1 : 0.45)
+            enabled: connection.canSubmit && tokenField.text.trim() !== ""
+            opacity: connection.busy ? 0.72 : (enabled ? 1 : 0.45)
             foreground: root.foreground
+            fontFamily: root.fontFamily
             onClicked: root.saveToken()
           }
+        }
+
+        Text {
+          visible: root.onboardingPhase !== "success"
+          width: parent.width
+          text: "Your token is stored locally with private file permissions."
+          textFormat: Text.PlainText
+          color: root.foreground
+          opacity: 0.7
+          wrapMode: Text.WordWrap
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
         }
 
         Text {

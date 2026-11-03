@@ -2,6 +2,7 @@
 set -euo pipefail
 
 umask 077
+export LC_ALL=C
 max_token_bytes=8192
 
 fail() {
@@ -17,7 +18,7 @@ token_path=$1
 token_size=$(stat -Lc %s -- "$token_path" 2>/dev/null) \
   || fail "could not read token file"
 [[ "$token_size" =~ ^[0-9]+$ ]] || fail "could not read token file"
-(( token_size > 0 && token_size <= max_token_bytes )) \
+(( token_size > 0 && token_size <= max_token_bytes + 1 )) \
   || fail "token file has an invalid size"
 
 token=$(tr -d '\r\n' < "$token_path") || fail "could not read token file"

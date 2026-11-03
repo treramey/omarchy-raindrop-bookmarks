@@ -2,6 +2,8 @@
 set -euo pipefail
 
 umask 077
+export LC_ALL=C
+max_token_bytes=8192
 
 token_path=${1:-${RAINDROP_TOKEN_FILE:-$HOME/.config/raindrop/token}}
 [[ "$token_path" == /* ]] || {
@@ -16,12 +18,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-IFS= read -r token || {
+IFS= read -r -n $((max_token_bytes + 1)) token || {
   echo "Raindrop token was not provided" >&2
   exit 1
 }
 [[ -n "$token" ]] || {
   echo "Raindrop token cannot be empty" >&2
+  exit 1
+}
+(( ${#token} <= max_token_bytes )) || {
+  echo "Raindrop token is too long" >&2
   exit 1
 }
 [[ "$token" != *$'\r'* ]] || {
@@ -42,5 +48,5 @@ fi
 temporary_token=$(mktemp "$token_dir/.token-XXXXXX")
 printf '%s\n' "$token" > "$temporary_token"
 chmod 600 -- "$temporary_token"
-mv -f -- "$temporary_token" "$token_path"
+mv -fT -- "$temporary_token" "$token_path"
 temporary_token=""
