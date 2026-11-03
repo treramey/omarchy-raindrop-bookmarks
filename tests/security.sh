@@ -67,15 +67,15 @@ snapshot_path="$snapshot_dir/bookmarks.json"
 mkdir -p "$fake_bin" "$fake_cache" "$snapshot_dir"
 printf '%s\n' 'test-token' > "$temporary_dir/token"
 token_fingerprint=$("$repo_dir/token-fingerprint" "$temporary_dir/token")
-jq -n --arg token_fingerprint "$token_fingerprint" '{
-  version: 1,
-  tokenFingerprint: $token_fingerprint,
-  syncedAt: 1,
-  bookmarks: [
-    {_id: 1, cover: "https://127.0.0.1/private.png"},
-    {_id: 2, cover: "https://1.1.1.1/public.png"}
-  ]
-}' > "$snapshot_path"
+python3 - "$token_fingerprint" "$snapshot_path" <<'PY'
+import json
+import sys
+with open(sys.argv[2], "w") as output:
+    json.dump({"version": 1, "tokenFingerprint": sys.argv[1], "syncedAt": 1,
+               "bookmarks": [{"_id": 1, "cover": "https://127.0.0.1/private.png"},
+                             {"_id": 2, "cover": "https://1.1.1.1/public.png"},
+                             {"_id": "12\u0000", "cover": "https://1.1.1.1/public.png"}]}, output)
+PY
 chmod 600 "$snapshot_path"
 
 cat > "$fake_bin/curl" <<'CURL'
@@ -187,16 +187,18 @@ sync_cover_fixture "$temporary_dir/allowed.png" "$fake_cache" "$temporary_dir/in
 [[ ! -e "$temporary_dir/ssrf-attempted" ]]
 [[ ! -e "$temporary_dir/api-requested" ]]
 [[ ! -e "$fake_cache/1.png" ]]
+[[ ! -e "$fake_cache/12.png" ]]
 [[ -s "$fake_cache/2.png" ]]
 [[ $(wc -l < "$temporary_dir/curl.log") -eq 1 ]]
 
 magick -size 16x16 xc:red "$temporary_dir/changed.png"
-jq -n --arg token_fingerprint "$token_fingerprint" '{
-  version: 1,
-  tokenFingerprint: $token_fingerprint,
-  syncedAt: 2,
-  bookmarks: [{_id: 2, cover: "https://1.1.1.1/changed.png"}]
-}' > "$snapshot_path"
+python3 - "$token_fingerprint" "$snapshot_path" <<'PY'
+import json
+import sys
+with open(sys.argv[2], "w") as output:
+    json.dump({"version": 1, "tokenFingerprint": sys.argv[1], "syncedAt": 2,
+               "bookmarks": [{"_id": 2, "cover": "https://1.1.1.1/changed.png"}]}, output)
+PY
 sync_cover_fixture "$temporary_dir/allowed.png" "$fake_cache" "$temporary_dir/index-changed.tsv"
 compare -metric AE "$fake_cache/2.png" "$temporary_dir/changed.png" null: \
   >/dev/null 2>&1
@@ -224,8 +226,14 @@ with Path(sys.argv[2]).open("wb") as output:
     output.write(png[33:])
 PY
 [[ $(stat -c %s "$temporary_dir/metadata.png") -lt 5242880 ]]
-jq '.bookmarks = [{_id: 3, cover: "https://1.1.1.1/public.png"}]' \
-  "$snapshot_path" > "$snapshot_path.tmp"
+python3 - "$snapshot_path" > "$snapshot_path.tmp" <<'PY'
+import json
+import sys
+with open(sys.argv[1]) as source:
+    snapshot = json.load(source)
+snapshot["bookmarks"] = [{"_id": 3, "cover": "https://1.1.1.1/public.png"}]
+json.dump(snapshot, sys.stdout)
+PY
 mv "$snapshot_path.tmp" "$snapshot_path"
 sync_cover_fixture "$temporary_dir/metadata.png" "$fake_cache" "$temporary_dir/index-metadata.tsv"
 [[ $(sed -n '5p' "$MAGICK_LIMIT_LOG") == identify ]]

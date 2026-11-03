@@ -38,10 +38,11 @@ fail() {
   exit 0
 }
 
-for command in curl jq file magick python3 timeout; do
+for command in curl file magick python3 timeout; do
   command -v "$command" >/dev/null 2>&1 || fail "missing dependency: $command"
 done
 [[ -x "$url_guard" ]] || fail "URL guard is missing or not executable"
+[[ -x "$plugin_dir/bookmark-json" ]] || fail "bookmark JSON helper is missing"
 [[ -x "$plugin_dir/token-fingerprint" ]] || fail "token fingerprint helper is missing"
 [[ -r "$magick_policy_dir/policy.xml" ]] || fail "ImageMagick policy is missing"
 
@@ -65,23 +66,10 @@ if [[ "$force" != true && -f "$stamp" ]]; then
 fi
 
 records=$(mktemp)
-if ! jq -e --arg token_fingerprint "$token_fingerprint" '
-    type == "object"
-    and .version == 1
-    and .tokenFingerprint == $token_fingerprint
-    and (.bookmarks | type == "array" and all(.[]; type == "object"))
-  ' "$snapshot_path" >/dev/null 2>&1; then
+"$plugin_dir/bookmark-json" cover-records "$snapshot_path" "$token_fingerprint" \
+  > "$records" 2>/dev/null || {
   rm -f -- "$records"
   fail "bookmark snapshot is missing, corrupt, or for another token"
-fi
-jq -r '.bookmarks[] | [
-    (._id | tostring),
-    (if (.cover // "") != "" then .cover
-     elif ((.media // []) | length) > 0 then (.media[0].link // "")
-     else "" end)
-  ] | @tsv' "$snapshot_path" > "$records" || {
-  rm -f -- "$records"
-  fail "could not read cover metadata"
 }
 
 trap 'rm -f "$records"' EXIT

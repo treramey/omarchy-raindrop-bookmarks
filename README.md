@@ -13,12 +13,12 @@ Colors, fonts, spacing, borders, and corner rounding follow your Omarchy theme.
 ## Requirements
 
 - Omarchy Quattro
-- `curl`, `jq`, `file`, `python3`, `timeout`, and ImageMagick's `magick`
+- `curl`, `file`, `python3`, `timeout`, and ImageMagick's `magick`
 
 Install the required packages:
 
 ```sh
-omarchy pkg add jq imagemagick python
+omarchy pkg add imagemagick python
 ```
 
 ## Install
@@ -160,7 +160,8 @@ qmllint -I "$OMARCHY_PATH/shell" RaindropBookmarks.qml BookmarkBrowser.qml Raind
 for script in configure-token validate-token token-fingerprint load-bookmarks bookmark-sync clear-bookmarks cover-sync scripts/*.sh tests/*.sh; do
   bash -n "$script" || break
 done
-python3 -m py_compile validate-cover-url
+python3 -m py_compile validate-cover-url bookmark-json
+python3 tests/bookmark-json.py
 tests/configure-token.sh
 tests/validate-token.sh
 tests/raindrop-connection.sh
