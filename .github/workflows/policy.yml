@@ -20,7 +20,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           changed=$(git diff --name-only "origin/$BASE_REF"...HEAD)
-          if ! grep -qE '^(RaindropBookmarks\.qml|BookmarkBrowser\.qml|RaindropConnection\.qml|FuzzySearch\.js|bookmark-sync|load-bookmarks|token-fingerprint|configure-token|validate-token|clear-bookmarks|cover-sync|validate-cover-url|imagemagick/)' <<<"$changed"; then
+          if ! grep -qE '^(RaindropBookmarks\.qml|BookmarkBrowser\.qml|RaindropConnection\.qml|FuzzySearch\.js|bookmark-json|bookmark-sync|load-bookmarks|token-fingerprint|configure-token|validate-token|clear-bookmarks|cover-sync|cover-thumbnail\.cpp|validate-cover-url)' <<<"$changed"; then
             echo "No plugin runtime files changed; skipping changeset requirement."
             exit 0
           fi

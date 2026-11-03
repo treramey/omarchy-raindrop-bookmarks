@@ -13,13 +13,14 @@ Colors, fonts, spacing, borders, and corner rounding follow your Omarchy theme.
 ## Requirements
 
 - Omarchy Quattro
-- `curl`, `file`, `python3`, `timeout`, and ImageMagick's `magick`
+- `curl`, `file`, `python3`, `timeout`, and Omarchy's Qt 6 image libraries and C++ build tools
 
-Install the required packages:
-
-```sh
-omarchy pkg add imagemagick python
-```
+Omarchy includes these packages in its base installation. The plugin compiles
+its small Qt thumbnail helper from the included source during the first cover
+sync and keeps the executable in the disposable cover cache. No separate image
+converter or downloaded binary is needed. If the compiler or Qt development
+files are unavailable, existing covers remain visible but new covers cannot be
+generated until those Omarchy components are restored.
 
 ## Install
 
@@ -100,11 +101,11 @@ Omarchy plugins run unsandboxed with your user permissions. This plugin:
 - downloads only HTTPS cover URLs on port 443 whose DNS answers are all public;
 - pins each cover request to its validated address, disables redirects and
   proxies, and enforces strict connection, transfer-time, and 5 MiB limits;
-- accepts only PNG, JPEG, GIF, and WebP covers and processes them under a
-  restrictive ImageMagick resource and codec policy;
-- caps each ImageMagick process's virtual address space at 256 MiB before
-  identification or conversion, preserves stricter inherited limits, and includes
-  metadata allocations outside ImageMagick's pixel cache in that budget;
+- accepts only PNG, JPEG, GIF, and WebP covers and processes the first frame
+  in an isolated Qt helper with explicit format and dimension checks;
+- caps the helper's virtual address space at 256 MiB before decoding, preserves
+  stricter inherited limits, and applies a 10-second deadline. Oversized or
+  failed conversions leave existing thumbnails unchanged;
 - stores generated thumbnails under
   `${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-shell/raindrop-bookmarks/covers`; and
 - opens selected links through `xdg-open`.
@@ -170,6 +171,9 @@ tests/security.sh
 tests/bookmark-browser.sh
 tests/quickshell-theme.sh
 ```
+
+`tests/security.sh` uses ImageMagick to generate and inspect test images. It is
+a development-test tool, not a plugin runtime requirement.
 
 Runtime changes require a Changesets entry (`pnpm changeset`). The release pull
 request updates `package.json` and `manifest.json`. Use Conventional Commit
