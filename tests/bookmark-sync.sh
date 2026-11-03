@@ -63,7 +63,14 @@ if [[ ${FAIL_PAGE:-} == 1 && "$url" == *'page=1' ]]; then
   exit 22
 fi
 
-if [[ ${EMPTY_MODE:-} == true ]]; then
+if [[ ${INVALID_MODE:-} == true ]]; then
+  printf '{"items":[{"_id":1},null]}\n' > "$output"
+elif [[ ${OVERFULL_MODE:-} == true ]]; then
+  python3 - <<'PY' > "$output"
+import json
+print(json.dumps({"items": [{"_id": index} for index in range(51)]}))
+PY
+elif [[ ${EMPTY_MODE:-} == true ]]; then
   printf '{"items":[]}\n' > "$output"
 elif [[ "$url" == *'page=0' ]]; then
   python3 - <<'PY' > "$output"
@@ -84,12 +91,18 @@ PATH="$fake_bin:$PATH" CURL_LOG="$temporary_dir/curl.log" \
   XDG_DATA_HOME="$data_home" \
   "$repo_dir/bookmark-sync" "$token_path" "$snapshot_path"
 
-[[ $(jq '.version' "$snapshot_path") == 1 ]]
-[[ $(jq '.bookmarks | length' "$snapshot_path") == 51 ]]
-[[ $(jq -r '.tokenFingerprint' "$snapshot_path") != 'sync-token' ]]
+python3 - "$snapshot_path" <<'PY'
+import json
+import sys
+with open(sys.argv[1]) as source:
+    snapshot = json.load(source)
+assert snapshot["version"] == 1
+assert len(snapshot["bookmarks"]) == 51
+assert snapshot["tokenFingerprint"] != "sync-token"
+PY
 [[ $(stat -c %a "$snapshot_path") == 600 ]]
 [[ $(stat -c %a "$(dirname "$snapshot_path")") == 700 ]]
-[[ $(PATH="$fake_bin:$PATH" "$repo_dir/load-bookmarks" "$token_path" "$snapshot_path" | jq '.bookmarks | length') == 51 ]]
+[[ $(PATH="$fake_bin:$PATH" "$repo_dir/load-bookmarks" "$token_path" "$snapshot_path" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["bookmarks"]))') == 51 ]]
 
 printf '%s\n' 'different-token' > "$temporary_dir/different-token"
 if "$repo_dir/load-bookmarks" "$temporary_dir/different-token" "$snapshot_path" >/dev/null 2>&1; then
@@ -105,6 +118,15 @@ if PATH="$fake_bin:$PATH" FAIL_PAGE=1 CURL_LOG="$temporary_dir/curl.log" \
 fi
 cmp "$temporary_dir/previous-snapshot" "$snapshot_path"
 
+for mode in INVALID_MODE OVERFULL_MODE; do
+  if env PATH="$fake_bin:$PATH" "$mode=true" CURL_LOG="$temporary_dir/curl.log" \
+      "$repo_dir/bookmark-sync" "$token_path" "$snapshot_path" --manual; then
+    echo "bookmark-sync accepted $mode" >&2
+    exit 1
+  fi
+  cmp "$temporary_dir/previous-snapshot" "$snapshot_path"
+done
+
 curl_count=$(wc -l < "$temporary_dir/curl.log")
 if PATH="$fake_bin:$PATH" CURL_LOG="$temporary_dir/curl.log" \
     "$repo_dir/bookmark-sync" "$token_path" "$snapshot_path"; then
@@ -115,14 +137,14 @@ fi
 
 PATH="$fake_bin:$PATH" EMPTY_MODE=true CURL_LOG="$temporary_dir/curl.log" \
   "$repo_dir/bookmark-sync" "$token_path" "$snapshot_path" --manual
-[[ $(jq '.bookmarks | length' "$snapshot_path") == 0 ]]
+[[ $(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["bookmarks"]))' "$snapshot_path") == 0 ]]
 
 if PATH="$fake_bin:$PATH" RATE_LIMIT_MODE=true CURL_LOG="$temporary_dir/curl.log" \
     "$repo_dir/bookmark-sync" "$token_path" "$snapshot_path" --manual; then
   echo 'bookmark-sync accepted a rate-limited refresh' >&2
   exit 1
 fi
-rate_limit_reset=$(jq -r '.rateLimitReset' "$(dirname "$snapshot_path")/sync-state.json")
+rate_limit_reset=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["rateLimitReset"])' "$(dirname "$snapshot_path")/sync-state.json")
 [[ "$rate_limit_reset" =~ ^[0-9]+$ && "$rate_limit_reset" -gt "$(date +%s)" ]]
 curl_count=$(wc -l < "$temporary_dir/curl.log")
 if PATH="$fake_bin:$PATH" RATE_LIMIT_MODE=true CURL_LOG="$temporary_dir/curl.log" \

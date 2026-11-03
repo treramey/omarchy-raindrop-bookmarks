@@ -66,19 +66,19 @@ legacy_output=$(PATH="$temporary_dir/bin:$PATH" EXPECTED_TOKEN='saved-token' \
 
 file_json=$(PATH="$temporary_dir/bin:$PATH" EXPECTED_TOKEN='saved-token' \
   "$repo_dir/validate-token" --json --file "$temporary_dir/token")
-jq -e '.status == "ok"' <<< "$file_json" >/dev/null
+python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "ok"' <<< "$file_json"
 : > "$temporary_dir/empty-token"
 if file_json=$("$repo_dir/validate-token" --json --file "$temporary_dir/empty-token" 2>/dev/null); then
   echo 'validate-token accepted an empty token file' >&2
   exit 1
 fi
-jq -e '.status == "input" and .code == "empty"' <<< "$file_json" >/dev/null
+python3 -c 'import json,sys; data=json.load(sys.stdin); assert (data["status"],data["code"]) == ("input","empty")' <<< "$file_json"
 
 boundary_token=$(printf 'x%.0s' {1..8192})
 printf '%s\n' "$boundary_token" | "$repo_dir/configure-token" "$temporary_dir/boundary-token"
 file_json=$(PATH="$temporary_dir/bin:$PATH" EXPECTED_TOKEN="$boundary_token" \
   "$repo_dir/validate-token" --json --file "$temporary_dir/boundary-token")
-jq -e '.status == "ok"' <<< "$file_json" >/dev/null
+python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "ok"' <<< "$file_json"
 [[ $("$repo_dir/token-fingerprint" "$temporary_dir/boundary-token") == "$(printf '%s' "$boundary_token" | sha256sum | cut -d' ' -f1)" ]]
 
 mkfifo "$temporary_dir/fifo"
@@ -96,10 +96,8 @@ run_json() {
     MOCK_HTTP_STATUS=200 MOCK_CURL_EXIT=0 MOCK_RESPONSE_HEADERS='' "$@" \
     "$repo_dir/validate-token" --json 2> "$temporary_dir/error") || exit_code=$?
   if [[ "$expected" == ok ]]; then [[ "$exit_code" -eq 0 ]]; else [[ "$exit_code" -ne 0 ]]; fi
-  jq -e --arg status "$expected" --arg code "$code" '
-    .status == $status and .code == $code
-    and (.retryAfterSeconds | type == "number" and floor == . and . >= 0 and . <= 86400)
-  ' <<< "$last_json" >/dev/null
+  python3 -c 'import json,sys; data=json.load(sys.stdin); retry=data["retryAfterSeconds"]; assert (data["status"],data["code"]) == (sys.argv[1],sys.argv[2]) and type(retry) is int and 0 <= retry <= 86400' \
+    "$expected" "$code" <<< "$last_json"
   [[ -z $(find "$temporary_dir/headers" -type f -print -quit) ]]
   ! grep -Fq 'secret-test-token' "$temporary_dir/error"
 }
@@ -128,24 +126,24 @@ run_json input multiline $'first\rsecond'
 [[ $(wc -l < "$temporary_dir/curl.log") -eq "$calls_before" ]]
 
 run_json rate-limit http secret-test-token MOCK_HTTP_STATUS=429 MOCK_CURL_EXIT=22
-[[ $(jq -r .retryAfterSeconds <<< "$last_json") -eq 60 ]]
+[[ $(python3 -c 'import json,sys; print(json.load(sys.stdin)["retryAfterSeconds"])' <<< "$last_json") -eq 60 ]]
 run_json rate-limit http secret-test-token MOCK_HTTP_STATUS=429 MOCK_CURL_EXIT=22 \
   MOCK_RESPONSE_HEADERS=$'Retry-After: 120\r\n'
-[[ $(jq -r .retryAfterSeconds <<< "$last_json") -eq 120 ]]
+[[ $(python3 -c 'import json,sys; print(json.load(sys.stdin)["retryAfterSeconds"])' <<< "$last_json") -eq 120 ]]
 run_json rate-limit http secret-test-token MOCK_HTTP_STATUS=429 MOCK_CURL_EXIT=22 \
   MOCK_RESPONSE_HEADERS=$'retry-after: 0\r\n'
-[[ $(jq -r .retryAfterSeconds <<< "$last_json") -eq 1 ]]
+[[ $(python3 -c 'import json,sys; print(json.load(sys.stdin)["retryAfterSeconds"])' <<< "$last_json") -eq 1 ]]
 run_json rate-limit http secret-test-token MOCK_HTTP_STATUS=429 MOCK_CURL_EXIT=22 \
   MOCK_RESPONSE_HEADERS=$'Retry-After: 999999999\r\n'
-[[ $(jq -r .retryAfterSeconds <<< "$last_json") -eq 86400 ]]
+[[ $(python3 -c 'import json,sys; print(json.load(sys.stdin)["retryAfterSeconds"])' <<< "$last_json") -eq 86400 ]]
 reset=$(( $(date +%s) + 120 ))
 run_json rate-limit http secret-test-token MOCK_HTTP_STATUS=429 MOCK_CURL_EXIT=22 \
   MOCK_RESPONSE_HEADERS="$(printf 'Retry-After: invalid-date\r\nX-RateLimit-Reset: %s\r\n' "$reset")"
-retry=$(jq -r .retryAfterSeconds <<< "$last_json")
+retry=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["retryAfterSeconds"])' <<< "$last_json")
 (( retry >= 118 && retry <= 120 ))
 run_json rate-limit http secret-test-token MOCK_HTTP_STATUS=429 MOCK_CURL_EXIT=22 \
   MOCK_RESPONSE_HEADERS="$(printf 'Retry-After: %s\r\n' "$(date -u -d "@$reset" '+%a, %d %b %Y %H:%M:%S GMT')")"
-retry=$(jq -r .retryAfterSeconds <<< "$last_json")
+retry=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["retryAfterSeconds"])' <<< "$last_json")
 (( retry >= 118 && retry <= 120 ))
 
 echo "token validation checks passed"

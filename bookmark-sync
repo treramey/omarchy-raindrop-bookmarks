@@ -34,13 +34,8 @@ write_sync_state() {
   local rate_limit_reset=$3
   local temporary_state
   temporary_state=$(mktemp "$state_path.tmp.XXXXXX") || return 1
-  if ! jq -n \
-      --arg fingerprint "$fingerprint" \
-      --argjson failure_until "$failure_until" \
-      --argjson rate_limit_reset "$rate_limit_reset" \
-      '{version: 1, tokenFingerprint: $fingerprint,
-        failureCooldownUntil: $failure_until,
-        rateLimitReset: $rate_limit_reset}' > "$temporary_state"; then
+  if ! "$script_dir/bookmark-json" write-state \
+      "$fingerprint" "$failure_until" "$rate_limit_reset" "$temporary_state"; then
     rm -f -- "$temporary_state"
     return 1
   fi
@@ -99,6 +94,10 @@ fi
   printf 'SYNC_FAILURE\t0\tbookmark sync: token fingerprint helper is missing\n'
   exit 1
 }
+[[ -x "$script_dir/bookmark-json" ]] || {
+  printf 'SYNC_FAILURE\t0\tbookmark sync: bookmark JSON helper is missing\n'
+  exit 1
+}
 
 data_dir=$(dirname -- "$snapshot_path")
 if [[ -e "$data_dir" || -L "$data_dir" ]]; then
@@ -128,11 +127,9 @@ rate_limit_reset=0
 if [[ -f "$state_path" && ! -L "$state_path" ]]; then
   state_size=$(stat -Lc %s -- "$state_path" 2>/dev/null || echo 0)
   if [[ "$state_size" =~ ^[0-9]+$ ]] && (( state_size <= 4096 )); then
-    state_fingerprint=$(jq -r '.tokenFingerprint // ""' "$state_path" 2>/dev/null || true)
-    if [[ "$state_fingerprint" == "$token_fingerprint" ]]; then
-      failure_until=$(jq -r '.failureCooldownUntil // 0' "$state_path" 2>/dev/null || echo 0)
-      rate_limit_reset=$(jq -r '.rateLimitReset // 0' "$state_path" 2>/dev/null || echo 0)
-    fi
+    read -r failure_until rate_limit_reset < <(
+      "$script_dir/bookmark-json" read-state "$state_path" "$token_fingerprint" 2>/dev/null || printf '0 0\n'
+    )
   fi
 fi
 [[ "$failure_until" =~ ^[0-9]+$ ]] || failure_until=0
@@ -180,15 +177,11 @@ while :; do
   (( total_api_bytes += page_bytes ))
   (( total_api_bytes <= max_total_api_bytes )) \
     || fail_sync "API response limit exceeded"
-  jq -e 'type == "object" and (.items | type == "array")
-    and all(.items[]; type == "object")' "$response" >/dev/null 2>&1 \
+  count=$("$script_dir/bookmark-json" append-page "$response" "$records" "$per_page" 2>/dev/null) \
     || fail_sync "invalid API response on page $page"
-  count=$(jq -r '.items | length' "$response") || fail_sync "invalid item count on page $page"
   [[ "$count" =~ ^[0-9]+$ ]] || fail_sync "invalid item count on page $page"
-  (( count <= per_page )) || fail_sync "API returned too many items on page $page"
   (( total_bookmarks += count ))
   (( total_bookmarks <= max_bookmarks )) || fail_sync "bookmark limit exceeded"
-  jq -c '.items[]' "$response" >> "$records" || fail_sync "could not read page $page"
 
   ((pages_fetched++))
   if (( count < per_page )); then
@@ -201,9 +194,8 @@ done
 temporary_snapshot=$(mktemp "$data_dir/.bookmarks.json.XXXXXX") || \
   fail_sync "could not create temporary snapshot"
 synced_at=$(date +%s)
-if ! jq -s --arg token_fingerprint "$token_fingerprint" --argjson synced_at "$synced_at" \
-    '{version: 1, tokenFingerprint: $token_fingerprint,
-      syncedAt: $synced_at, bookmarks: .}' "$records" > "$temporary_snapshot"; then
+if ! "$script_dir/bookmark-json" write-snapshot \
+    "$records" "$token_fingerprint" "$synced_at" "$temporary_snapshot"; then
   rm -f -- "$temporary_snapshot"
   fail_sync "could not write snapshot"
 fi

@@ -25,12 +25,5 @@ snapshot_size=$(stat -Lc %s -- "$snapshot_path" 2>/dev/null) \
 token_fingerprint=$("$script_dir/token-fingerprint" "$token_path") \
   || fail "could not fingerprint token"
 
-jq -e --arg token_fingerprint "$token_fingerprint" '
-  type == "object"
-  and .version == 1
-  and .tokenFingerprint == $token_fingerprint
-  and (.syncedAt | type == "number" and floor == . and . >= 0)
-  and (.bookmarks | type == "array" and all(.[]; type == "object"))
-' "$snapshot_path" >/dev/null 2>&1 || fail "snapshot is missing, corrupt, or for another token"
-
-jq -c . "$snapshot_path"
+"$script_dir/bookmark-json" load-snapshot "$snapshot_path" "$token_fingerprint" 2>/dev/null \
+  || fail "snapshot is missing, corrupt, or for another token"

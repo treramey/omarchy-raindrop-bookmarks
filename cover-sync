@@ -12,14 +12,11 @@ if [[ ${4:-} == --force ]]; then
 fi
 stamp="$cover_dir/.last-sync"
 url_guard="$plugin_dir/validate-cover-url"
-magick_policy_dir="$plugin_dir/imagemagick"
+thumbnail_source="$plugin_dir/cover-thumbnail.cpp"
 refresh_seconds=300
 parallel_downloads=4
 max_new_covers_per_sync=100
 max_cover_bytes=$((5 * 1024 * 1024))
-max_image_width=8192
-max_image_height=8192
-max_image_area=$((32 * 1024 * 1024))
 max_image_memory_kib=$((256 * 1024))
 cover_refresh_seconds=$((7 * 24 * 60 * 60))
 
@@ -38,12 +35,14 @@ fail() {
   exit 0
 }
 
-for command in curl jq file magick python3 timeout; do
+for command in curl file python3 timeout g++ pkg-config sha256sum flock; do
   command -v "$command" >/dev/null 2>&1 || fail "missing dependency: $command"
 done
 [[ -x "$url_guard" ]] || fail "URL guard is missing or not executable"
+[[ -x "$plugin_dir/bookmark-json" ]] || fail "bookmark JSON helper is missing"
 [[ -x "$plugin_dir/token-fingerprint" ]] || fail "token fingerprint helper is missing"
-[[ -r "$magick_policy_dir/policy.xml" ]] || fail "ImageMagick policy is missing"
+[[ -r "$thumbnail_source" ]] || fail "cover thumbnail source is missing"
+pkg-config --exists Qt6Gui || fail "Qt6Gui development files are missing"
 
 token_fingerprint=$("$plugin_dir/token-fingerprint" "$token_path" 2>/dev/null) \
   || fail "token is unavailable: $token_path"
@@ -55,6 +54,26 @@ snapshot_size=$(stat -Lc %s -- "$snapshot_path" 2>/dev/null || echo 0)
 
 mkdir -p "$cover_dir"
 
+# Compile the checked-in helper into the disposable cover cache on first use.
+# Include the Qt version so package upgrades rebuild a matching binary. The
+# plugin directory remains source-only for Omarchy validation and updates.
+thumbnail_hash=$(sha256sum "$thumbnail_source" | cut -d ' ' -f 1)
+qt_version=$(pkg-config --modversion Qt6Gui) || fail "could not read Qt6Gui version"
+thumbnail_helper="$cover_dir/.cover-thumbnail-$qt_version-$thumbnail_hash"
+build_thumbnail_helper() (
+  flock -x -w 35 9 || return 1
+  [[ -f "$thumbnail_helper" && ! -L "$thumbnail_helper" && -x "$thumbnail_helper" ]] && return 0
+  local built
+  built=$(mktemp "$cover_dir/.cover-thumbnail-build-XXXXXX") || return 1
+  trap 'rm -f -- "$built"' EXIT
+  local -a qt_flags
+  read -r -a qt_flags <<< "$(pkg-config --cflags --libs Qt6Gui)" || return 1
+  timeout --kill-after=2 30 g++ -std=c++17 -O2 -fPIC "$thumbnail_source" \
+    "${qt_flags[@]}" -o "$built" || return 1
+  chmod 700 "$built" || return 1
+  mv -f -- "$built" "$thumbnail_helper"
+) 9>"$cover_dir/.cover-thumbnail-build.lock"
+
 if [[ "$force" != true && -f "$stamp" ]]; then
   now=$(date +%s)
   modified=$(stat -c %Y "$stamp" 2>/dev/null || echo 0)
@@ -64,31 +83,19 @@ if [[ "$force" != true && -f "$stamp" ]]; then
   fi
 fi
 
+build_thumbnail_helper || fail "could not build Qt cover thumbnail helper"
+
 records=$(mktemp)
-if ! jq -e --arg token_fingerprint "$token_fingerprint" '
-    type == "object"
-    and .version == 1
-    and .tokenFingerprint == $token_fingerprint
-    and (.bookmarks | type == "array" and all(.[]; type == "object"))
-  ' "$snapshot_path" >/dev/null 2>&1; then
+"$plugin_dir/bookmark-json" cover-records "$snapshot_path" "$token_fingerprint" \
+  > "$records" 2>/dev/null || {
   rm -f -- "$records"
   fail "bookmark snapshot is missing, corrupt, or for another token"
-fi
-jq -r '.bookmarks[] | [
-    (._id | tostring),
-    (if (.cover // "") != "" then .cover
-     elif ((.media // []) | length) > 0 then (.media[0].link // "")
-     else "" end)
-  ] | @tsv' "$snapshot_path" > "$records" || {
-  rm -f -- "$records"
-  fail "could not read cover metadata"
 }
 
 trap 'rm -f "$records"' EXIT
 
-run_magick() (
-  # Pixel-cache limits do not cover codec metadata allocations. Bound the entire
-  # parser address space before either identify or conversion reads foreign data.
+run_thumbnail() (
+  # Bound the whole Qt decoder, including metadata, before it parses foreign data.
   local memory_limit_kib=$max_image_memory_kib
   local inherited_memory_kib
   inherited_memory_kib=$(ulimit -Sv) || return 1
@@ -101,14 +108,8 @@ run_magick() (
   # The soft limit cannot exceed the inherited hard limit. Lower both to this
   # budget without raising either, and never parse if the limit cannot be applied.
   ulimit -v "$memory_limit_kib" || return 1
-  timeout --kill-after=2 12 \
-    env MAGICK_CONFIGURE_PATH="$magick_policy_dir" \
-      MAGICK_MEMORY_LIMIT=64MiB \
-      MAGICK_MAP_LIMIT=128MiB \
-      MAGICK_DISK_LIMIT=0 \
-      MAGICK_THREAD_LIMIT=1 \
-      MAGICK_TIME_LIMIT=10 \
-      magick "$@"
+  ulimit -c 0 || return 1
+  timeout --kill-after=2 10 "$thumbnail_helper" "$@"
 )
 
 sync_cover() {
@@ -124,11 +125,8 @@ sync_cover() {
   local canonical_url
   local resolve_address
   local mime
-  local coder
+  local format
   local size
-  local dimensions
-  local width
-  local height
   local cached_url=""
   local modified
   local now
@@ -172,29 +170,14 @@ sync_cover() {
 
   mime=$(file --brief --mime-type "$download" 2>/dev/null)
   case "$mime" in
-    image/png) coder=PNG ;;
-    image/jpeg) coder=JPEG ;;
-    image/gif) coder=GIF ;;
-    image/webp) coder=WEBP ;;
+    image/png) format=png ;;
+    image/jpeg) format=jpeg ;;
+    image/gif) format=gif ;;
+    image/webp) format=webp ;;
     *) rm -f "$download"; return 0 ;;
   esac
 
-  dimensions=$(run_magick identify -ping -format '%w %h' \
-    "${coder}:${download}[0]" 2>/dev/null) || {
-    rm -f "$download" "$converted"
-    return 0
-  }
-  read -r width height <<< "$dimensions"
-  if [[ ! "$width" =~ ^[0-9]+$ || ! "$height" =~ ^[0-9]+$ ]] \
-      || (( width == 0 || height == 0 \
-            || width > max_image_width || height > max_image_height \
-            || width * height > max_image_area )); then
-    rm -f "$download" "$converted"
-    return 0
-  fi
-
-  if ! run_magick "${coder}:${download}[0]" -auto-orient \
-      -thumbnail '96x96>' -strip "PNG:$converted" 2>/dev/null; then
+  if ! run_thumbnail "$format" "$download" "$converted" 2>/dev/null; then
     rm -f "$download" "$converted"
     return 0
   fi
